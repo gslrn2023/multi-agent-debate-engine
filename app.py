@@ -1,5 +1,7 @@
 import os
+import re
 import time
+import tempfile
 import markdown
 import gradio as gr
 import spaces
@@ -300,8 +302,46 @@ def render_feed_html(topic: str, history: list, max_loops: int) -> str:
             """)
     return "\n".join(html_blocks)
 
+# ==========================================
+# TRANSCRIPT EXPORTER HELPER
+# ==========================================
+def export_transcript_file(state):
+    """Generates a clean, formatted Markdown file containing the full debate history."""
+    if not state or not state.get("history"):
+        raise gr.Error("No debate content to export yet! Run at least one turn first.")
+
+    topic = state.get("topic", "Debate")
+    clean_topic = re.sub(r'[^a-zA-Z0-9_\- ]', '', topic).strip().replace(" ", "_")[:40]
+    if not clean_topic:
+        clean_topic = "Transcript"
+    filename = f"Debate_{clean_topic}.md"
+
+    total_turns_done = state.get("current_turn", 0)
+    rounds_completed = (total_turns_done + 1) // 2
+
+    lines = [
+        f"# ⚖️ Multi-Agent AI Debate Transcript",
+        f"**Proposition:** {topic}",
+        f"**Date:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+        f"**Progress:** {total_turns_done} turns completed (Round {rounds_completed} of {state.get('max_loops', DEFAULT_MAX_LOOPS)})",
+        f"\n---\n"
+    ]
+
+    for item in state["history"]:
+        role_icon = "🟢" if item["role"] == "Supporter" else "🔴"
+        lines.append(f"### {role_icon} Round {item['round']} — {item['role']} ({item['model']})\n")
+        lines.append(f"{item['content'].strip()}\n")
+        lines.append("\n---\n")
+
+    temp_dir = tempfile.gettempdir()
+    filepath = os.path.join(temp_dir, filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    return filepath
+
 def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, gemini_model, state):
-    """Executes a single step-by-step turn with live Tavily search and strict wait time."""
+    """Executes a single step-by-step turn with live Tavily search, strict wait time, and transcript export update."""
     if not topic_input or not topic_input.strip():
         raise gr.Error("Please enter a debate topic or proposition first.")
 
@@ -314,12 +354,14 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     total_turns = state["max_loops"] * 2
 
     if turn_idx >= total_turns:
+        transcript_path = export_transcript_file(state)
         return (
             state,
             render_feed_html(state["topic"], state["history"], state["max_loops"]),
             gr.update(value="🏁 Debate Concluded", interactive=False),
             gr.update(interactive=False),
-            gr.update(interactive=False)
+            gr.update(interactive=False),
+            gr.update(value=transcript_path, visible=True)
         )
 
     current_round = (turn_idx // 2) + 1
@@ -372,6 +414,9 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     })
     state["current_turn"] += 1
 
+    # Also log to Hugging Face container console for live monitoring under the "Logs" tab
+    print(f"\n{'='*50}\n[DEBATE TURN COMPLETED] Topic: {state['topic']} | Round {current_round} | {agent_role} ({used_model})\n{'='*50}")
+
     new_turn_idx = state["current_turn"]
     if new_turn_idx < total_turns:
         next_round = (new_turn_idx // 2) + 1
@@ -384,12 +429,16 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         btn_label = f"🏁 Debate Complete ({state['max_loops']} Rounds Finished) — Click Reset for New Topic"
         btn_interactive = False
 
+    # Prepare updated Markdown file so DownloadButton works immediately on click
+    transcript_path = export_transcript_file(state)
+
     return (
         state,
         render_feed_html(state["topic"], state["history"], state["max_loops"]),
         gr.update(value=btn_label, interactive=btn_interactive),
         gr.update(interactive=False),
-        gr.update(interactive=False)
+        gr.update(interactive=False),
+        gr.update(value=transcript_path, visible=True)
     )
 
 def reset_debate():
@@ -406,7 +455,8 @@ def reset_debate():
         render_feed_html("", [], DEFAULT_MAX_LOOPS),
         gr.update(value="🚀 Start Debate (Trigger Round 1: Supporter [Groq])", interactive=True),
         gr.update(value="", interactive=True),
-        gr.update(value=DEFAULT_MAX_LOOPS, interactive=True)
+        gr.update(value=DEFAULT_MAX_LOOPS, interactive=True),
+        gr.update(value=None, visible=False)
     )
 
 # ==========================================
@@ -455,7 +505,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
                 )
                 cooldown_slider = gr.Slider(
                     minimum=0,
-                    maximum=30,
+                    maximum=60,
                     value=DEFAULT_WAIT_TIME_SEC,
                     step=1,
                     label="Wait Time Between Each Agent Execution (Seconds)",
@@ -485,11 +535,20 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
 
         feed_html = gr.HTML(value=render_feed_html("", [], DEFAULT_MAX_LOOPS))
 
-        next_turn_btn = gr.Button(
-            "🚀 Start Debate (Trigger Round 1: Supporter [Groq])",
-            variant="primary",
-            size="lg"
-        )
+        with gr.Row():
+            next_turn_btn = gr.Button(
+                "🚀 Start Debate (Trigger Round 1: Supporter [Groq])",
+                variant="primary",
+                size="lg",
+                scale=3
+            )
+            export_btn = gr.DownloadButton(
+                "📥 Download Transcript (.md)",
+                variant="secondary",
+                size="lg",
+                visible=False,
+                scale=1
+            )
 
     # Wire up Password Gate (supports clicking the button OR pressing Enter)
     unlock_btn.click(
@@ -507,13 +566,19 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
     next_turn_btn.click(
         fn=run_debate_step,
         inputs=[topic_box, loops_slider, cooldown_slider, groq_model_dropdown, gemini_model_dropdown, debate_state],
-        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider]
+        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn]
+    )
+
+    export_btn.click(
+        fn=export_transcript_file,
+        inputs=[debate_state],
+        outputs=[export_btn]
     )
 
     reset_btn.click(
         fn=reset_debate,
         inputs=[],
-        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider]
+        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn]
     )
 
 if __name__ == "__main__":
