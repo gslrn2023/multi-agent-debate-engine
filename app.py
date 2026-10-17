@@ -6,6 +6,7 @@ import spaces
 from groq import Groq
 from google import genai
 from google.genai import types
+from tavily import TavilyClient
 
 # ==========================================
 # CONFIGURABLE VARIABLES (LOOPS & WAIT TIME)
@@ -104,6 +105,51 @@ def verify_password(entered_password: str):
         )
 
 # ==========================================
+# TAVILY LIVE WEB FACT RETRIEVAL
+# ==========================================
+def fetch_tavily_facts(topic: str, agent_role: str, current_round: int) -> str:
+    """Queries Tavily for verified facts, statistics, and references tailored to the agent's stance."""
+    tavily_key = os.environ.get("TAVILY_API_KEY", "").strip()
+    if not tavily_key:
+        raise gr.Error("Missing TAVILY_API_KEY in Hugging Face Space Secrets.")
+
+    if agent_role == "Supporter":
+        focus = "empirical evidence statistics benefits success cases data supporting" if current_round == 1 else "verified statistics empirical studies data refuting criticisms of"
+    else:
+        focus = "empirical criticisms risks negative impacts statistics failure cases against" if current_round == 1 else "counter-evidence data studies structural flaws risks of"
+
+    # Keep query under 380 characters (Tavily max query length is 400 chars)
+    query = f"{topic[:250]} {focus}"
+
+    try:
+        client = TavilyClient(api_key=tavily_key)
+        response = client.search(
+            query=query,
+            search_depth="basic",  # Uses 1 credit per search (1,000 free/month)
+            max_results=4,
+            include_answer=True
+        )
+
+        snippets = []
+        if response.get("answer"):
+            snippets.append(f"- **Web Summary:** {response['answer'][:350]}")
+
+        for idx, res in enumerate(response.get("results", []), 1):
+            title = res.get("title", "Verified Source")
+            url = res.get("url", "")
+            # Trim content to 350 chars per result to protect Groq TPM limits
+            content = res.get("content", "").strip().replace("\n", " ")[:350]
+            snippets.append(f"- **Source {idx} ({title} | {url}):** {content}...")
+
+        if not snippets:
+            return "No external web snippets returned; rely on verified historical and empirical data."
+
+        return "\n".join(snippets)
+    except Exception as e:
+        gr.Warning(f"⚠️ Tavily search warning: {str(e)}. Proceeding with internal knowledge.")
+        return "Web search temporarily unavailable; rely on verified empirical and historical knowledge."
+
+# ==========================================
 # PHASE 2: EXTERNAL PROMPT LOADER & API CALLS
 # ==========================================
 def load_system_prompt(agent_role: str, topic: str, current_round: int, max_rounds: int) -> str:
@@ -170,11 +216,11 @@ def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str) -
         kwargs = {
             "model": groq_model,
             "messages": [{"role": "user", "content": combined_prompt}],
-            "temperature": 0.6,
+            "temperature": 0.65,
             "max_completion_tokens": 2048,
         }
         if "gpt-oss" in groq_model:
-            kwargs["reasoning_effort"] = "medium"
+            kwargs["reasoning_effort"] = "low"
 
         completion = client.chat.completions.create(**kwargs)
         content = completion.choices[0].message.content
@@ -197,8 +243,8 @@ def call_gemini_contender(system_prompt: str, user_prompt: str, gemini_model: st
             contents=user_prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
-                temperature=0.7,
-                max_output_tokens=4096,  # 1024 for deep rebuttal thinking + 3072 headroom for full visible output
+                temperature=0.65,
+                max_output_tokens=4096,
                 thinking_config=types.ThinkingConfig(
                     thinking_budget=1024
                 ),
@@ -255,7 +301,7 @@ def render_feed_html(topic: str, history: list, max_loops: int) -> str:
     return "\n".join(html_blocks)
 
 def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, gemini_model, state):
-    """Executes a single step-by-step turn with strict wait time between every AI agent execution."""
+    """Executes a single step-by-step turn with live Tavily search and strict wait time."""
     if not topic_input or not topic_input.strip():
         raise gr.Error("Please enter a debate topic or proposition first.")
 
@@ -279,6 +325,13 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     current_round = (turn_idx // 2) + 1
     agent_role = "Supporter" if (turn_idx % 2 == 0) else "Contender"
 
+    # Enforce wait time before EVERY agent execution (after the very first opening turn)
+    wait_sec = int(cooldown_input)
+    enforce_wait_time(state.get("last_agent_ts", 0.0), wait_sec, f"{agent_role} (Round {current_round})")
+
+    # Fetch live verified facts & figures from Tavily for this turn
+    web_facts = fetch_tavily_facts(state["topic"], agent_role, current_round)
+
     system_prompt = load_system_prompt(
         agent_role=agent_role,
         topic=state["topic"],
@@ -286,18 +339,20 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         max_rounds=state["max_loops"]
     )
 
+    research_block = (
+        f"VERIFIED LIVE WEB RESEARCH (Tavily Search Results):\n{web_facts}\n\n"
+        f"INSTRUCTION: Ground your arguments, statistics, figures, and source references directly in the verified web research above alongside established empirical facts."
+    )
+
     if not state["history"]:
-        user_prompt = f"Please open the debate on the proposition: '{state['topic']}'."
+        user_prompt = f"{research_block}\n\nPlease open the debate on the proposition: '{state['topic']}'."
     else:
         transcript = build_tpm_safe_transcript(state["history"])
         user_prompt = (
             f"Here is the debate transcript so far:\n\n{transcript}\n\n"
+            f"{research_block}\n\n"
             f"Now deliver your Round {current_round} response as the {agent_role}."
         )
-
-    # Enforce wait time before EVERY agent execution (after the very first opening turn)
-    wait_sec = int(cooldown_input)
-    enforce_wait_time(state.get("last_agent_ts", 0.0), wait_sec, f"{agent_role} (Round {current_round})")
 
     if agent_role == "Supporter":
         reply_text = call_groq_supporter(system_prompt, user_prompt, groq_model)
@@ -367,7 +422,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
         "last_agent_ts": 0.0
     })
 
-    gr.Markdown("# ⚖️ The Multi-Agent AI Debate Engine\n*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`)*")
+    gr.Markdown("# ⚖️ The Multi-Agent AI Debate Engine\n*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`) • Grounded with Live Tavily Web Search*")
 
     # ------------------------------------------
     # 1. PASSWORD GATE SCREEN (SHOWN FIRST)
