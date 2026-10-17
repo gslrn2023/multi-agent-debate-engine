@@ -11,7 +11,7 @@ from google.genai import types
 # CONFIGURABLE VARIABLES (LOOPS & WAIT TIME)
 # ==========================================
 DEFAULT_MAX_LOOPS = 3       # // adjust the value here // (Default & Max number of debate loops/rounds)
-DEFAULT_WAIT_TIME_SEC = 6   # // adjust the value here // (Wait time in seconds between EACH AI agent execution)
+DEFAULT_WAIT_TIME_SEC = 30   # // adjust the value here // (Wait time in seconds between EACH AI agent execution)
 
 # ==========================================
 # PROMPT FILE NAMES (TWO SEPARATE FILES)
@@ -171,10 +171,10 @@ def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str) -
             "model": groq_model,
             "messages": [{"role": "user", "content": combined_prompt}],
             "temperature": 0.6,
-            "max_completion_tokens": 1024,
+            "max_completion_tokens": 2048,
         }
         if "gpt-oss" in groq_model:
-            kwargs["reasoning_effort"] = "low"
+            kwargs["reasoning_effort"] = "medium"
 
         completion = client.chat.completions.create(**kwargs)
         content = completion.choices[0].message.content
@@ -185,7 +185,7 @@ def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str) -
     return call_with_rate_limit_retry(_execute, "Groq")
 
 def call_gemini_contender(system_prompt: str, user_prompt: str, gemini_model: str) -> str:
-    """Calls Gemini API (optimized for gemini-2.5-flash)."""
+    """Calls Gemini API with dedicated thinking budget + ample output token headroom for full rebuttals."""
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not gemini_key:
         raise gr.Error("Missing GEMINI_API_KEY in Hugging Face Space Secrets.")
@@ -198,7 +198,10 @@ def call_gemini_contender(system_prompt: str, user_prompt: str, gemini_model: st
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=0.7,
-                max_output_tokens=1024,
+                max_output_tokens=4096,  # 1024 for deep rebuttal thinking + 3072 headroom for full visible output
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=1024
+                ),
             )
         )
         if not response.text:
