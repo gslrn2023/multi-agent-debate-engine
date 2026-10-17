@@ -2,15 +2,30 @@ import os
 import time
 import markdown
 import gradio as gr
+import spaces
 from groq import Groq
 from google import genai
 from google.genai import types
+
+# ==========================================
+# CONFIGURABLE VARIABLES (LOOPS & WAIT TIME)
+# ==========================================
+DEFAULT_MAX_LOOPS = 3       # // adjust the value here // (Default & Max number of debate loops/rounds)
+DEFAULT_WAIT_TIME_SEC = 6   # // adjust the value here // (Wait time in seconds between EACH AI agent execution)
 
 # ==========================================
 # PROMPT FILE NAMES (TWO SEPARATE FILES)
 # ==========================================
 SUPPORTER_PROMPT_FILE = "supporter_prompt.txt"
 CONTENDER_PROMPT_FILE = "contender_prompt.txt"
+
+# ==========================================
+# ZEROGPU STARTUP REQUIREMENT HANDLER
+# ==========================================
+@spaces.GPU(duration=5)
+def zerogpu_healthcheck():
+    """Satisfies Hugging Face ZeroGPU mandatory @spaces.GPU startup detection."""
+    return True
 
 # ==========================================
 # CUSTOM CSS FOR DISTINCT AGENT PALETTES
@@ -67,6 +82,28 @@ CUSTOM_CSS = """
 """
 
 # ==========================================
+# PASSWORD VERIFICATION (CHK_PSSWD)
+# ==========================================
+def verify_password(entered_password: str):
+    """Checks user password against the CHK_PSSWD secret in Hugging Face Settings."""
+    expected_password = os.environ.get("CHK_PSSWD", "").strip()
+    if not expected_password:
+        raise gr.Error("Missing 'CHK_PSSWD' secret! Please set CHK_PSSWD in your Hugging Face Space Settings -> Variables and secrets.")
+
+    if entered_password.strip() == expected_password:
+        return (
+            gr.update(visible=False),  # Hide login container
+            gr.update(visible=True),   # Show main debate application
+            ""                         # Clear any error message
+        )
+    else:
+        return (
+            gr.update(visible=True),
+            gr.update(visible=False),
+            "❌ **Incorrect password.** Please try again."
+        )
+
+# ==========================================
 # PHASE 2: EXTERNAL PROMPT LOADER & API CALLS
 # ==========================================
 def load_system_prompt(agent_role: str, topic: str, current_round: int, max_rounds: int) -> str:
@@ -86,7 +123,6 @@ def load_system_prompt(agent_role: str, topic: str, current_round: int, max_roun
     else:
         phase_goal = "Final Closing Round — Introduce no new arguments; summarize key clashes, weigh final impacts, and deliver a decisive closing conclusion."
 
-    # Safely replace placeholders if present in the text file, and append live round context
     populated = (
         template
         .replace("{topic}", topic)
@@ -97,13 +133,13 @@ def load_system_prompt(agent_role: str, topic: str, current_round: int, max_roun
 
     return f"{populated}\n\n--- LIVE DEBATE CONTEXT ---\nProposition: \"{topic}\"\nCurrent Round: {current_round} of {max_rounds}\nRound Objective: {phase_goal}"
 
-def enforce_cooldown(last_call_ts: float, cooldown_sec: int, provider_name: str):
-    """Pauses execution if the time since the last call to the same provider is shorter than cooldown_sec."""
-    if last_call_ts > 0 and cooldown_sec > 0:
+def enforce_wait_time(last_call_ts: float, wait_sec: int, next_agent_label: str):
+    """Strictly pauses execution between EACH AI agent turn if clicked faster than wait_sec."""
+    if last_call_ts > 0 and wait_sec > 0:
         elapsed = time.time() - last_call_ts
-        remaining = cooldown_sec - elapsed
+        remaining = wait_sec - elapsed
         if remaining > 0:
-            gr.Info(f"⏳ Pacing TPM/RPM limits for {provider_name}: waiting {remaining:.1f}s...")
+            gr.Info(f"⏳ Pacing API limits before {next_agent_label}: waiting {remaining:.1f}s...")
             time.sleep(remaining)
 
 def call_with_rate_limit_retry(api_func, provider_name: str, max_retries: int = 3) -> str:
@@ -216,7 +252,7 @@ def render_feed_html(topic: str, history: list, max_loops: int) -> str:
     return "\n".join(html_blocks)
 
 def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, gemini_model, state):
-    """Executes a single step-by-step turn."""
+    """Executes a single step-by-step turn with strict wait time between every AI agent execution."""
     if not topic_input or not topic_input.strip():
         raise gr.Error("Please enter a debate topic or proposition first.")
 
@@ -256,17 +292,19 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
             f"Now deliver your Round {current_round} response as the {agent_role}."
         )
 
-    cooldown_sec = int(cooldown_input)
+    # Enforce wait time before EVERY agent execution (after the very first opening turn)
+    wait_sec = int(cooldown_input)
+    enforce_wait_time(state.get("last_agent_ts", 0.0), wait_sec, f"{agent_role} (Round {current_round})")
+
     if agent_role == "Supporter":
-        enforce_cooldown(state.get("last_groq_ts", 0.0), cooldown_sec, "Groq")
         reply_text = call_groq_supporter(system_prompt, user_prompt, groq_model)
-        state["last_groq_ts"] = time.time()
         used_model = groq_model
     else:
-        enforce_cooldown(state.get("last_gemini_ts", 0.0), cooldown_sec, "Gemini")
         reply_text = call_gemini_contender(system_prompt, user_prompt, gemini_model)
-        state["last_gemini_ts"] = time.time()
         used_model = gemini_model
+
+    # Record completion timestamp so the next agent turn strictly waits wait_sec
+    state["last_agent_ts"] = time.time()
 
     state["history"].append({
         "role": agent_role,
@@ -302,20 +340,19 @@ def reset_debate():
         "current_turn": 0,
         "active": False,
         "topic": "",
-        "max_loops": 3,
-        "last_groq_ts": 0.0,
-        "last_gemini_ts": 0.0
+        "max_loops": DEFAULT_MAX_LOOPS,
+        "last_agent_ts": 0.0
     }
     return (
         fresh_state,
-        render_feed_html("", [], 3),
+        render_feed_html("", [], DEFAULT_MAX_LOOPS),
         gr.update(value="🚀 Start Debate (Trigger Round 1: Supporter [Groq])", interactive=True),
         gr.update(value="", interactive=True),
-        gr.update(value=3, interactive=True)
+        gr.update(value=DEFAULT_MAX_LOOPS, interactive=True)
     )
 
 # ==========================================
-# PHASE 3: GRADIO INTERFACE
+# PHASE 3: GRADIO INTERFACE (WITH PASSWORD GATE)
 # ==========================================
 with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
     debate_state = gr.State({
@@ -323,61 +360,92 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
         "current_turn": 0,
         "active": False,
         "topic": "",
-        "max_loops": 3,
-        "last_groq_ts": 0.0,
-        "last_gemini_ts": 0.0
+        "max_loops": DEFAULT_MAX_LOOPS,
+        "last_agent_ts": 0.0
     })
 
     gr.Markdown("# ⚖️ The Multi-Agent AI Debate Engine\n*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`)*")
 
-    with gr.Accordion("⚙️ Debate Settings (Loops, TPM Cooldown & Model Selection)", open=True):
+    # ------------------------------------------
+    # 1. PASSWORD GATE SCREEN (SHOWN FIRST)
+    # ------------------------------------------
+    with gr.Column(visible=True) as login_view:
+        gr.Markdown("### 🔒 Protected Access\nPlease enter the access password to unlock the Debate Engine.")
         with gr.Row():
-            loops_slider = gr.Slider(
-                minimum=1,
-                maximum=8,
-                value=3,
-                step=1,
-                label="Number of Debate Rounds / Loops (1 Loop = Supporter + Contender)",
-                scale=2
+            password_input = gr.Textbox(
+                label="Access Password",
+                type="password",
+                placeholder="Enter password...",
+                scale=3
             )
-            cooldown_slider = gr.Slider(
-                minimum=0,
-                maximum=20,
-                value=6,
-                step=1,
-                label="TPM/RPM Safety Wait Time (Seconds between same-model calls)",
-                scale=2
-            )
-        with gr.Row():
-            groq_model_dropdown = gr.Dropdown(
-                choices=["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-                value="openai/gpt-oss-120b",
-                label="🟢 Supporter Model (Groq)",
-                scale=1
-            )
-            gemini_model_dropdown = gr.Dropdown(
-                choices=["gemini-2.5-flash", "gemini-2.5-pro"],
-                value="gemini-2.5-flash",
-                label="🔴 Contender Model (Gemini)",
-                scale=1
-            )
+            unlock_btn = gr.Button("🔓 Unlock Debate Engine", variant="primary", scale=1)
+        login_error_msg = gr.Markdown("")
 
-    with gr.Row():
-        topic_box = gr.Textbox(
-            label="Debate Proposition / Topic",
-            placeholder="e.g., Is social media positively impacting society?",
-            scale=4
+    # ------------------------------------------
+    # 2. MAIN DEBATE ENGINE (HIDDEN UNTIL UNLOCKED)
+    # ------------------------------------------
+    with gr.Column(visible=False) as main_debate_view:
+        with gr.Accordion("⚙️ Debate Settings (Loops, Wait Time & Model Selection)", open=True):
+            with gr.Row():
+                loops_slider = gr.Slider(
+                    minimum=1,
+                    maximum=DEFAULT_MAX_LOOPS,
+                    value=DEFAULT_MAX_LOOPS,
+                    step=1,
+                    label=f"Number of Debate Rounds / Loops (Max {DEFAULT_MAX_LOOPS})",
+                    scale=2
+                )
+                cooldown_slider = gr.Slider(
+                    minimum=0,
+                    maximum=30,
+                    value=DEFAULT_WAIT_TIME_SEC,
+                    step=1,
+                    label="Wait Time Between Each Agent Execution (Seconds)",
+                    scale=2
+                )
+            with gr.Row():
+                groq_model_dropdown = gr.Dropdown(
+                    choices=["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+                    value="openai/gpt-oss-120b",
+                    label="🟢 Supporter Model (Groq)",
+                    scale=1
+                )
+                gemini_model_dropdown = gr.Dropdown(
+                    choices=["gemini-2.5-flash", "gemini-2.5-pro"],
+                    value="gemini-2.5-flash",
+                    label="🔴 Contender Model (Gemini)",
+                    scale=1
+                )
+
+        with gr.Row():
+            topic_box = gr.Textbox(
+                label="Debate Proposition / Topic",
+                placeholder="e.g., Is social media positively impacting society?",
+                scale=4
+            )
+            reset_btn = gr.Button("🔄 Reset / New Debate", variant="secondary", scale=1)
+
+        feed_html = gr.HTML(value=render_feed_html("", [], DEFAULT_MAX_LOOPS))
+
+        next_turn_btn = gr.Button(
+            "🚀 Start Debate (Trigger Round 1: Supporter [Groq])",
+            variant="primary",
+            size="lg"
         )
-        reset_btn = gr.Button("🔄 Reset / New Debate", variant="secondary", scale=1)
 
-    feed_html = gr.HTML(value=render_feed_html("", [], 3))
-
-    next_turn_btn = gr.Button(
-        "🚀 Start Debate (Trigger Round 1: Supporter [Groq])",
-        variant="primary",
-        size="lg"
+    # Wire up Password Gate (supports clicking the button OR pressing Enter)
+    unlock_btn.click(
+        fn=verify_password,
+        inputs=[password_input],
+        outputs=[login_view, main_debate_view, login_error_msg]
+    )
+    password_input.submit(
+        fn=verify_password,
+        inputs=[password_input],
+        outputs=[login_view, main_debate_view, login_error_msg]
     )
 
+    # Wire up Main Debate Controls
     next_turn_btn.click(
         fn=run_debate_step,
         inputs=[topic_box, loops_slider, cooldown_slider, groq_model_dropdown, gemini_model_dropdown, debate_state],
