@@ -19,7 +19,7 @@ from xhtml2pdf import pisa
 # ==========================================
 DEFAULT_MAX_LOOPS = 3       # // adjust the value here // (Default & Max number of debate loops/rounds)
 DEFAULT_WAIT_TIME_SEC = 30  # // adjust the value here // (Wait time in seconds between EACH AI agent execution)
-MAX_DAILY_DEBATES = 5       # // adjust the value here // (Global max debates per day across all users)
+MAX_DAILY_DEBATES = 4       # // adjust the value here // (Global max debates per day across all users)
 DAILY_LIMIT_FILE = "daily_limit.json"
 DAILY_LIMIT_LOCK = threading.Lock()
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
