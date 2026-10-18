@@ -1,7 +1,10 @@
 import os
 import re
+import json
 import time
 import tempfile
+import threading
+from datetime import datetime, timedelta, timezone
 import markdown
 import gradio as gr
 import spaces
@@ -12,10 +15,14 @@ from tavily import TavilyClient
 from xhtml2pdf import pisa
 
 # ==========================================
-# CONFIGURABLE VARIABLES (LOOPS & WAIT TIME)
+# CONFIGURABLE VARIABLES (LOOPS, WAIT & DAILY LIMIT)
 # ==========================================
 DEFAULT_MAX_LOOPS = 3       # // adjust the value here // (Default & Max number of debate loops/rounds)
-DEFAULT_WAIT_TIME_SEC = 30   # // adjust the value here // (Wait time in seconds between EACH AI agent execution)
+DEFAULT_WAIT_TIME_SEC = 30  # // adjust the value here // (Wait time in seconds between EACH AI agent execution)
+MAX_DAILY_DEBATES = 5       # // adjust the value here // (Global max debates per day across all users)
+DAILY_LIMIT_FILE = "daily_limit.json"
+DAILY_LIMIT_LOCK = threading.Lock()
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 # ==========================================
 # PROMPT FILE NAMES (TWO SEPARATE FILES)
@@ -84,6 +91,43 @@ CUSTOM_CSS = """
     line-height: 1.6;
 }
 """
+
+# ==========================================
+# THREAD-SAFE DAILY DEBATE LIMITER (IST)
+# ==========================================
+def _read_daily_usage_unlocked(today_str: str) -> dict:
+    """Internal helper to read and auto-reset daily usage data (must be called inside DAILY_LIMIT_LOCK)."""
+    if os.path.exists(DAILY_LIMIT_FILE):
+        try:
+            with open(DAILY_LIMIT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {"date": today_str, "count": 0}
+    else:
+        data = {"date": today_str, "count": 0}
+
+    if data.get("date") != today_str:
+        data = {"date": today_str, "count": 0}
+
+    return data
+
+def can_start_new_debate() -> tuple[bool, int]:
+    """Thread-safe check to verify if daily debate quota is available before starting Turn 1."""
+    today_str = datetime.now(IST_TZ).strftime("%Y-%m-%d")
+    with DAILY_LIMIT_LOCK:
+        data = _read_daily_usage_unlocked(today_str)
+        current_count = int(data.get("count", 0))
+        return (current_count < MAX_DAILY_DEBATES), current_count
+
+def record_new_debate_started() -> int:
+    """Thread-safe increment called ONLY after Turn 1 succeeds so failed API calls don't burn quota."""
+    today_str = datetime.now(IST_TZ).strftime("%Y-%m-%d")
+    with DAILY_LIMIT_LOCK:
+        data = _read_daily_usage_unlocked(today_str)
+        data["count"] = int(data.get("count", 0)) + 1
+        with open(DAILY_LIMIT_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return data["count"]
 
 # ==========================================
 # PASSWORD VERIFICATION (CHK_PSSWD)
@@ -304,21 +348,70 @@ def render_feed_html(topic: str, history: list, max_loops: int) -> str:
     return "\n".join(html_blocks)
 
 # ==========================================
-# TRANSCRIPT EXPORTER HELPER (PDF via xhtml2pdf)
+# PDF TEXT SANITIZER & TRANSCRIPT EXPORTER
 # ==========================================
+def sanitize_for_pdf(text: str) -> str:
+    """Replaces Unicode hyphens, dashes, smart quotes, and symbols that cause black squares in xhtml2pdf."""
+    if not text:
+        return ""
+
+    replacements = {
+        "\u2010": "-",   # Hyphen
+        "\u2011": "-",   # Non-breaking hyphen (primary cause of black squares in gpt-oss-120b output)
+        "\u2012": "-",   # Figure dash
+        "\u2013": "-",   # En dash
+        "\u2014": "--",  # Em dash
+        "\u2015": "--",  # Horizontal bar
+        "\u2212": "-",   # Mathematical minus sign
+        "\u2043": "-",   # Hyphen bullet
+        "\ufe58": "-",   # Small em dash
+        "\ufe63": "-",   # Small hyphen-minus
+        "\uff0d": "-",   # Fullwidth hyphen-minus
+        "\u2018": "'",   # Left single smart quote
+        "\u2019": "'",   # Right single smart quote / apostrophe
+        "\u201a": "'",   # Single low-9 quote
+        "\u201b": "'",   # Single high-reversed-9 quote
+        "\u2032": "'",   # Prime
+        "\u201c": '"',   # Left double smart quote
+        "\u201d": '"',   # Right double smart quote
+        "\u201e": '"',   # Double low-9 quote
+        "\u2033": '"',   # Double prime
+        "\u00ab": '"',   # Left guillemet
+        "\u00bb": '"',   # Right guillemet
+        "\u2026": "...", # Horizontal ellipsis
+        "\u00a0": " ",   # Non-breaking space
+        "\u202f": " ",   # Narrow no-break space
+        "\u2009": " ",   # Thin space
+        "\u200b": "",    # Zero-width space
+        "\u2022": "*",   # Bullet
+        "\u2264": "<=",  # Less-than or equal to
+        "\u2265": ">=",  # Greater-than or equal to
+        "\u2260": "!=",  # Not equal to
+        "\u00d7": "x",   # Multiplication sign
+        "\u20b9": "Rs.", # Indian Rupee symbol (not in base Type1 Helvetica)
+    }
+
+    for unicode_char, ascii_equiv in replacements.items():
+        text = text.replace(unicode_char, ascii_equiv)
+
+    # Guarantee only Latin-1 printable characters reach xhtml2pdf's built-in Helvetica font
+    return text.encode("latin-1", errors="ignore").decode("latin-1")
+
 def export_transcript_file(state):
-    """Generates a styled, paginated PDF file containing the full debate history."""
+    """Generates a styled, paginated PDF file containing the full debate history without missing-glyph boxes."""
     if not state or not state.get("history"):
         raise gr.Error("No debate content to export yet! Run at least one turn first.")
 
-    topic = state.get("topic", "Debate")
-    clean_topic = re.sub(r'[^a-zA-Z0-9_\- ]', '', topic).strip().replace(" ", "_")[:40]
+    raw_topic = state.get("topic", "Debate")
+    safe_topic = sanitize_for_pdf(raw_topic)
+    clean_topic = re.sub(r'[^a-zA-Z0-9_\- ]', '', safe_topic).strip().replace(" ", "_")[:40]
     if not clean_topic:
         clean_topic = "Transcript"
     filename = f"Debate_{clean_topic}.pdf"
 
     total_turns_done = state.get("current_turn", 0)
     rounds_completed = (total_turns_done + 1) // 2
+    now_ist = datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S IST')
 
     # PDF Stylesheet
     pdf_html = f"""
@@ -381,25 +474,27 @@ def export_transcript_file(state):
     <body>
         <h1>Multi-Agent AI Debate Transcript</h1>
         <div class="meta">
-            <b>Proposition:</b> {topic}<br/>
-            <b>Date:</b> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())} | 
+            <b>Proposition:</b> {safe_topic}<br/>
+            <b>Date:</b> {now_ist} | 
             <b>Progress:</b> {total_turns_done} turns ({rounds_completed} of {state.get('max_loops', DEFAULT_MAX_LOOPS)} rounds)
         </div>
     """
 
     for item in state["history"]:
-        body_html = markdown.markdown(item["content"])
+        sanitized_markdown = sanitize_for_pdf(item["content"])
+        body_html = markdown.markdown(sanitized_markdown)
+        safe_model = sanitize_for_pdf(str(item.get("model", "")))
         if item["role"] == "Supporter":
             pdf_html += f"""
             <div class="supporter-card">
-                <div class="header-sup">Agent A: The Supporter &bull; Groq ({item['model']}) &bull; Round {item['round']}</div>
+                <div class="header-sup">Agent A: The Supporter - Groq ({safe_model}) - Round {item['round']}</div>
                 {body_html}
             </div>
             """
         else:
             pdf_html += f"""
             <div class="contender-card">
-                <div class="header-con">Agent B: The Contender &bull; Gemini ({item['model']}) &bull; Round {item['round']}</div>
+                <div class="header-con">Agent B: The Contender - Gemini ({safe_model}) - Round {item['round']}</div>
                 {body_html}
             </div>
             """
@@ -418,17 +513,25 @@ def export_transcript_file(state):
     return filepath
 
 def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, gemini_model, state):
-    """Executes a single step-by-step turn with live Tavily search, strict wait time, and transcript export update."""
+    """Executes a single step-by-step turn with daily quota protection, live Tavily search, and PDF export."""
     if not topic_input or not topic_input.strip():
         raise gr.Error("Please enter a debate topic or proposition first.")
 
-    if not state["active"]:
-        state["topic"] = topic_input.strip()
-        state["max_loops"] = int(max_loops_input)
-        state["active"] = True
+    is_first_turn_of_debate = not state["active"]
+
+    # 1. Check Daily Limit BEFORE starting a brand-new debate (Turn 1)
+    if is_first_turn_of_debate:
+        allowed, used_today = can_start_new_debate()
+        if not allowed:
+            raise gr.Error(
+                f"⏳ Daily limit of {MAX_DAILY_DEBATES} debates reached ({used_today}/{MAX_DAILY_DEBATES} used today) "
+                f"to protect free-tier API quotas. Quota resets at midnight IST!"
+            )
 
     turn_idx = state["current_turn"]
-    total_turns = state["max_loops"] * 2
+    max_loops_val = int(max_loops_input) if is_first_turn_of_debate else state["max_loops"]
+    total_turns = max_loops_val * 2
+    current_topic = topic_input.strip() if is_first_turn_of_debate else state["topic"]
 
     if turn_idx >= total_turns:
         transcript_path = export_transcript_file(state)
@@ -449,13 +552,13 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     enforce_wait_time(state.get("last_agent_ts", 0.0), wait_sec, f"{agent_role} (Round {current_round})")
 
     # Fetch live verified facts & figures from Tavily for this turn
-    web_facts = fetch_tavily_facts(state["topic"], agent_role, current_round)
+    web_facts = fetch_tavily_facts(current_topic, agent_role, current_round)
 
     system_prompt = load_system_prompt(
         agent_role=agent_role,
-        topic=state["topic"],
+        topic=current_topic,
         current_round=current_round,
-        max_rounds=state["max_loops"]
+        max_rounds=max_loops_val
     )
 
     research_block = (
@@ -464,7 +567,7 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     )
 
     if not state["history"]:
-        user_prompt = f"{research_block}\n\nPlease open the debate on the proposition: '{state['topic']}'."
+        user_prompt = f"{research_block}\n\nPlease open the debate on the proposition: '{current_topic}'."
     else:
         transcript = build_tpm_safe_transcript(state["history"])
         user_prompt = (
@@ -479,6 +582,14 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     else:
         reply_text = call_gemini_contender(system_prompt, user_prompt, gemini_model)
         used_model = gemini_model
+
+    # 2. Increment Daily Counter ONLY after Turn 1 succeeds
+    if is_first_turn_of_debate:
+        new_daily_count = record_new_debate_started()
+        state["topic"] = current_topic
+        state["max_loops"] = max_loops_val
+        state["active"] = True
+        gr.Info(f"✅ Debate started ({new_daily_count} of {MAX_DAILY_DEBATES} daily debates used today).")
 
     # Record completion timestamp so the next agent turn strictly waits wait_sec
     state["last_agent_ts"] = time.time()
