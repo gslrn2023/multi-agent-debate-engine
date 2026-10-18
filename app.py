@@ -9,6 +9,7 @@ from groq import Groq
 from google import genai
 from google.genai import types
 from tavily import TavilyClient
+from xhtml2pdf import pisa
 
 # ==========================================
 # CONFIGURABLE VARIABLES (LOOPS & WAIT TIME)
@@ -303,10 +304,10 @@ def render_feed_html(topic: str, history: list, max_loops: int) -> str:
     return "\n".join(html_blocks)
 
 # ==========================================
-# TRANSCRIPT EXPORTER HELPER
+# TRANSCRIPT EXPORTER HELPER (PDF via xhtml2pdf)
 # ==========================================
 def export_transcript_file(state):
-    """Generates a clean, formatted Markdown file containing the full debate history."""
+    """Generates a styled, paginated PDF file containing the full debate history."""
     if not state or not state.get("history"):
         raise gr.Error("No debate content to export yet! Run at least one turn first.")
 
@@ -314,29 +315,105 @@ def export_transcript_file(state):
     clean_topic = re.sub(r'[^a-zA-Z0-9_\- ]', '', topic).strip().replace(" ", "_")[:40]
     if not clean_topic:
         clean_topic = "Transcript"
-    filename = f"Debate_{clean_topic}.md"
+    filename = f"Debate_{clean_topic}.pdf"
 
     total_turns_done = state.get("current_turn", 0)
     rounds_completed = (total_turns_done + 1) // 2
 
-    lines = [
-        f"# ⚖️ Multi-Agent AI Debate Transcript",
-        f"**Proposition:** {topic}",
-        f"**Date:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
-        f"**Progress:** {total_turns_done} turns completed (Round {rounds_completed} of {state.get('max_loops', DEFAULT_MAX_LOOPS)})",
-        f"\n---\n"
-    ]
+    # PDF Stylesheet
+    pdf_html = f"""
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <style>
+        @page {{
+            size: letter;
+            margin: 1.5cm;
+            @bottom-right {{ content: counter(page); }}
+        }}
+        body {{
+            font-family: Helvetica, Arial, sans-serif;
+            color: #1f2937;
+            font-size: 10pt;
+            line-height: 1.5;
+        }}
+        h1 {{
+            font-size: 16pt;
+            color: #111827;
+            margin-bottom: 4px;
+        }}
+        .meta {{
+            font-size: 9pt;
+            color: #6b7280;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 8px;
+        }}
+        .supporter-card {{
+            background-color: #f0fdf4;
+            border-left: 4px solid #16a34a;
+            padding: 10px 14px;
+            margin-bottom: 14px;
+        }}
+        .contender-card {{
+            background-color: #fef2f2;
+            border-left: 4px solid #dc2626;
+            padding: 10px 14px;
+            margin-bottom: 14px;
+        }}
+        .header-sup {{
+            font-weight: bold;
+            color: #15803d;
+            font-size: 10pt;
+            margin-bottom: 6px;
+        }}
+        .header-con {{
+            font-weight: bold;
+            color: #b91c1c;
+            font-size: 10pt;
+            margin-bottom: 6px;
+        }}
+        p, li {{
+            margin-bottom: 4px;
+        }}
+    </style>
+    </head>
+    <body>
+        <h1>Multi-Agent AI Debate Transcript</h1>
+        <div class="meta">
+            <b>Proposition:</b> {topic}<br/>
+            <b>Date:</b> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())} | 
+            <b>Progress:</b> {total_turns_done} turns ({rounds_completed} of {state.get('max_loops', DEFAULT_MAX_LOOPS)} rounds)
+        </div>
+    """
 
     for item in state["history"]:
-        role_icon = "🟢" if item["role"] == "Supporter" else "🔴"
-        lines.append(f"### {role_icon} Round {item['round']} — {item['role']} ({item['model']})\n")
-        lines.append(f"{item['content'].strip()}\n")
-        lines.append("\n---\n")
+        body_html = markdown.markdown(item["content"])
+        if item["role"] == "Supporter":
+            pdf_html += f"""
+            <div class="supporter-card">
+                <div class="header-sup">Agent A: The Supporter &bull; Groq ({item['model']}) &bull; Round {item['round']}</div>
+                {body_html}
+            </div>
+            """
+        else:
+            pdf_html += f"""
+            <div class="contender-card">
+                <div class="header-con">Agent B: The Contender &bull; Gemini ({item['model']}) &bull; Round {item['round']}</div>
+                {body_html}
+            </div>
+            """
+
+    pdf_html += "</body></html>"
 
     temp_dir = tempfile.gettempdir()
     filepath = os.path.join(temp_dir, filename)
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    
+    with open(filepath, "w+b") as f:
+        pisa_status = pisa.CreatePDF(pdf_html, dest=f)
+        
+    if pisa_status.err:
+        raise gr.Error("PDF generation error occurred.")
 
     return filepath
 
@@ -429,7 +506,7 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         btn_label = f"🏁 Debate Complete ({state['max_loops']} Rounds Finished) — Click Reset for New Topic"
         btn_interactive = False
 
-    # Prepare updated Markdown file so DownloadButton works immediately on click
+    # Prepare updated PDF file so DownloadButton works immediately on click
     transcript_path = export_transcript_file(state)
 
     return (
@@ -543,7 +620,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
                 scale=3
             )
             export_btn = gr.DownloadButton(
-                "📥 Download Transcript (.md)",
+                "📥 Download Transcript (.pdf)",
                 variant="secondary",
                 size="lg",
                 visible=False,
