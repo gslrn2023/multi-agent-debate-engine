@@ -12,6 +12,7 @@ from groq import Groq
 from google import genai
 from google.genai import types
 from tavily import TavilyClient
+from exa_py import Exa
 from xhtml2pdf import pisa
 
 # ==========================================
@@ -19,7 +20,7 @@ from xhtml2pdf import pisa
 # ==========================================
 DEFAULT_MAX_LOOPS = 3       # // adjust the value here // (Default & Max number of debate loops/rounds)
 DEFAULT_WAIT_TIME_SEC = 30  # // adjust the value here // (Wait time in seconds between EACH AI agent execution)
-MAX_DAILY_DEBATES = 4       # // adjust the value here // (Global max debates per day across all users)
+MAX_DAILY_DEBATES = 5       # // adjust the value here // (Global max debates per day across all users)
 DAILY_LIMIT_FILE = "daily_limit.json"
 DAILY_LIMIT_LOCK = threading.Lock()
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
@@ -152,54 +153,75 @@ def verify_password(entered_password: str):
         )
 
 # ==========================================
-# TAVILY LIVE WEB FACT RETRIEVAL
+# CHAINED SEARCH AGGREGATION (TAVILY + EXA)
 # ==========================================
-def fetch_tavily_facts(topic: str, agent_role: str, current_round: int) -> str:
-    """Queries Tavily for verified facts, statistics, and references tailored to the agent's stance."""
+def fetch_combined_research(topic: str, agent_role: str, current_round: int) -> str:
+    """Fetches 2 mainstream web results from Tavily + 2 deep neural results from Exa for both rebuttal and new fronts."""
     tavily_key = os.environ.get("TAVILY_API_KEY", "").strip()
-    if not tavily_key:
-        raise gr.Error("Missing TAVILY_API_KEY in Hugging Face Space Secrets.")
+    exa_key = os.environ.get("EXA_API_KEY", "").strip()
+
+    if not tavily_key and not exa_key:
+        raise gr.Error("Missing both TAVILY_API_KEY and EXA_API_KEY in Hugging Face Space Secrets.")
 
     if agent_role == "Supporter":
-        focus = "empirical evidence statistics benefits success cases data supporting" if current_round == 1 else "verified statistics empirical studies data refuting criticisms of"
+        tavily_focus = "empirical evidence statistics economic benefits success data supporting"
+        exa_focus = f"In-depth empirical study, institutional report, and structural economic advantages proving why {topic} is beneficial"
     else:
-        focus = "empirical criticisms risks negative impacts statistics failure cases against" if current_round == 1 else "counter-evidence data studies structural flaws risks of"
+        tavily_focus = "empirical criticisms hidden costs structural risks negative statistics against"
+        exa_focus = f"Contrarian research paper, systemic failure cases, unintended consequences, and alternative pathways challenging {topic}"
 
-    # Keep query under 380 characters (Tavily max query length is 400 chars)
-    query = f"{topic[:250]} {focus}"
+    snippets = []
 
-    try:
-        client = TavilyClient(api_key=tavily_key)
-        response = client.search(
-            query=query,
-            search_depth="basic",  # Uses 1 credit per search (1,000 free/month)
-            max_results=4,
-            include_answer=True
-        )
+    # 1. TAVILY SEARCH (Top 2 Mainstream / Statistical Results)
+    if tavily_key:
+        try:
+            tavily_client = TavilyClient(api_key=tavily_key)
+            t_query = f"{topic[:240]} {tavily_focus} round {current_round}"
+            t_resp = tavily_client.search(
+                query=t_query,
+                search_depth="basic",
+                max_results=2,
+                include_answer=True
+            )
+            if t_resp.get("answer"):
+                snippets.append(f"- **[Tavily Overview]:** {t_resp['answer'][:260]}")
 
-        snippets = []
-        if response.get("answer"):
-            snippets.append(f"- **Web Summary:** {response['answer'][:350]}")
+            for res in t_resp.get("results", []):
+                title = res.get("title", "Verified Report").strip()
+                url = res.get("url", "")
+                content = res.get("content", "").strip().replace("\n", " ")[:280]
+                snippets.append(f"- **[Publication: {title} | {url}]:** {content}...")
+        except Exception as e:
+            gr.Warning(f"⚠️ Tavily search warning: {str(e)}. Continuing with Exa/internal data.")
 
-        for idx, res in enumerate(response.get("results", []), 1):
-            title = res.get("title", "Verified Source")
-            url = res.get("url", "")
-            # Trim content to 350 chars per result to protect Groq TPM limits
-            content = res.get("content", "").strip().replace("\n", " ")[:350]
-            snippets.append(f"- **Source {idx} ({title} | {url}):** {content}...")
+    # 2. EXA NEURAL SEARCH (Top 2 Deep / Independent Front Results)
+    if exa_key:
+        try:
+            exa_client = Exa(api_key=exa_key)
+            e_resp = exa_client.search_and_contents(
+                exa_focus[:350],
+                type="auto",
+                num_results=2,
+                text={"max_characters": 320}
+            )
+            for res in getattr(e_resp, "results", []):
+                title = (getattr(res, "title", None) or "Research Analysis").strip()
+                url = getattr(res, "url", "")
+                text_body = (getattr(res, "text", "") or "").strip().replace("\n", " ")[:280]
+                if text_body:
+                    snippets.append(f"- **[Deep Study: {title} | {url}]:** {text_body}...")
+        except Exception as e:
+            gr.Warning(f"⚠️ Exa search warning: {str(e)}. Continuing with Tavily/internal data.")
 
-        if not snippets:
-            return "No external web snippets returned; rely on verified historical and empirical data."
+    if not snippets:
+        return "No external web snippets returned; rely on verified historical and empirical data."
 
-        return "\n".join(snippets)
-    except Exception as e:
-        gr.Warning(f"⚠️ Tavily search warning: {str(e)}. Proceeding with internal knowledge.")
-        return "Web search temporarily unavailable; rely on verified empirical and historical knowledge."
+    return "\n".join(snippets)
 
 # ==========================================
 # PHASE 2: EXTERNAL PROMPT LOADER & API CALLS
 # ==========================================
-def load_system_prompt(agent_role: str, topic: str, current_round: int, max_rounds: int) -> str:
+def load_system_prompt(agent_role: str, topic: str, current_round: int, max_rounds: int, is_very_first_speech: bool) -> str:
     """Loads the prompt from supporter_prompt.txt or contender_prompt.txt and injects round variables."""
     file_path = SUPPORTER_PROMPT_FILE if agent_role == "Supporter" else CONTENDER_PROMPT_FILE
 
@@ -209,12 +231,23 @@ def load_system_prompt(agent_role: str, topic: str, current_round: int, max_roun
     with open(file_path, "r", encoding="utf-8") as f:
         template = f.read()
 
-    if current_round == 1:
-        phase_goal = "Opening Round — Establish clear definitions, scope, and your foundational case."
+    if is_very_first_speech:
+        phase_goal = (
+            "Opening Speech (Round 1) — Deliver 4 to 5 offensive bullets establishing your strongest empirical pillars "
+            "across distinct dimensions (economic, structural, and practical)."
+        )
     elif current_round < max_rounds:
-        phase_goal = "Middle Clash & Rebuttal Round — Directly dismantle the opponent's last arguments, test their assumptions, and advance the clash."
+        phase_goal = (
+            f"Clash & Expansion (Round {current_round}) — Split your 4 to 5 bullets strictly into: "
+            "(A) 2 to 3 Direct Rebuttal bullets dismantling the opponent's last turn, AND "
+            "(B) 1 to 2 New Independent Front bullets introducing a brand-new, unaddressed empirical angle or structural factor."
+        )
     else:
-        phase_goal = "Final Closing Round — Introduce no new arguments; summarize key clashes, weigh final impacts, and deliver a decisive closing conclusion."
+        phase_goal = (
+            f"Final Closing Clash (Round {current_round}) — Split your 4 to 5 bullets into: "
+            "(A) 2 to 3 decisive Rebuttal bullets refuting the opponent's latest claims, AND "
+            "(B) 1 to 2 overarching Macro-Impact bullets proving why your side wins the big picture."
+        )
 
     populated = (
         template
@@ -513,7 +546,7 @@ def export_transcript_file(state):
     return filepath
 
 def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, gemini_model, state):
-    """Executes a single step-by-step turn with daily quota protection, live Tavily search, and PDF export."""
+    """Executes a single step-by-step turn with daily quota protection, chained Tavily+Exa search, and PDF export."""
     if not topic_input or not topic_input.strip():
         raise gr.Error("Please enter a debate topic or proposition first.")
 
@@ -546,24 +579,28 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
 
     current_round = (turn_idx // 2) + 1
     agent_role = "Supporter" if (turn_idx % 2 == 0) else "Contender"
+    is_very_first_speech = (turn_idx == 0)
 
     # Enforce wait time before EVERY agent execution (after the very first opening turn)
     wait_sec = int(cooldown_input)
     enforce_wait_time(state.get("last_agent_ts", 0.0), wait_sec, f"{agent_role} (Round {current_round})")
 
-    # Fetch live verified facts & figures from Tavily for this turn
-    web_facts = fetch_tavily_facts(current_topic, agent_role, current_round)
+    # Fetch live verified facts & figures from BOTH Tavily and Exa for this turn
+    web_facts = fetch_combined_research(current_topic, agent_role, current_round)
 
     system_prompt = load_system_prompt(
         agent_role=agent_role,
         topic=current_topic,
         current_round=current_round,
-        max_rounds=max_loops_val
+        max_rounds=max_loops_val,
+        is_very_first_speech=is_very_first_speech
     )
 
     research_block = (
-        f"VERIFIED LIVE WEB RESEARCH (Tavily Search Results):\n{web_facts}\n\n"
-        f"INSTRUCTION: Ground your arguments, statistics, figures, and source references directly in the verified web research above alongside established empirical facts."
+        f"VERIFIED LIVE WEB RESEARCH (Tavily + Exa Neural Search):\n{web_facts}\n\n"
+        f"CRITICAL CITATION & STRATEGY RULES:\n"
+        f"1. Cite actual organization, institution, or publication names (e.g., College Board, Federal Reserve, Brookings). NEVER write generic labels like '(Source 1)' or '(Source 2)'.\n"
+        f"2. If an opponent has already spoken, use 2 to 3 bullets to directly rebut their points AND use 1 to 2 bullets to open a NEW, unaddressed independent front backed by the research above."
     )
 
     if not state["history"]:
@@ -660,7 +697,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
         "last_agent_ts": 0.0
     })
 
-    gr.Markdown("# ⚖️ The Multi-Agent AI Debate Engine\n*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`) • Grounded with Live Tavily Web Search*")
+    gr.Markdown("# ⚖️ The Multi-Agent AI Debate Engine\n*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`) • Grounded with Live Tavily + Exa Neural Search*")
 
     # ------------------------------------------
     # 1. PASSWORD GATE SCREEN (SHOWN FIRST)
