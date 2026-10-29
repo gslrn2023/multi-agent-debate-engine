@@ -41,7 +41,7 @@ def zerogpu_healthcheck():
     return True
 
 # ==========================================
-# CUSTOM CSS FOR DISTINCT AGENT & JUDGE PALETTES
+# CUSTOM CSS FOR DISTINCT AGENT PALETTES
 # ==========================================
 CUSTOM_CSS = """
 .supporter-card {
@@ -80,26 +80,6 @@ CUSTOM_CSS = """
     display: flex;
     justify-content: space-between;
     border-bottom: 1px solid #fecaca;
-    padding-bottom: 6px;
-}
-.judge-card {
-    background-color: #fefce8;
-    border-left: 6px solid #ca8a04;
-    border-radius: 10px;
-    padding: 18px 22px;
-    margin-top: 22px;
-    margin-bottom: 18px;
-    color: #422006;
-    box-shadow: 0 3px 8px rgba(0,0,0,0.08);
-}
-.judge-header {
-    font-weight: 700;
-    font-size: 1.12rem;
-    color: #a16207;
-    margin-bottom: 10px;
-    display: flex;
-    justify-content: space-between;
-    border-bottom: 1px solid #fde047;
     padding-bottom: 6px;
 }
 .round-badge {
@@ -174,31 +154,51 @@ def verify_password(entered_password: str):
         )
 
 # ==========================================
-# DYNAMIC SEARCH AGGREGATION (TAVILY + EXA)
+# UNIVERSAL DYNAMIC SEARCH AGGREGATION (TAVILY + EXA)
 # ==========================================
 def extract_opponent_focus_terms(last_turn_text: str) -> str:
-    """Extracts key terms from the opponent's last speech so Round 2+ searches pull fresh counter-evidence."""
+    """Extracts core subject terms from the opponent's bullet points and bolded anchors (ignoring conversational hooks)."""
     if not last_turn_text:
         return ""
+
+    # Isolate bullet lines so rhetorical words in the opening/closing hook are ignored
+    bullet_lines = [
+        line.strip() for line in last_turn_text.splitlines()
+        if re.match(r'^[\*\-\•]\s+', line.strip())
+    ]
+    target_text = " ".join(bullet_lines) if bullet_lines else last_turn_text
+
+    # 1. Extract bolded anchor phrases (**...**) first, as they hold the core concepts
+    bold_chunks = re.findall(r'\*\*([^\*]{3,45})\*\*', target_text)
+    anchor_words = re.findall(r'\b[A-Za-z][A-Za-z0-9\-]{3,18}\b', " ".join(bold_chunks))
+
+    # 2. Extract capitalized entities / proper nouns and substantive terms from bullet bodies
+    body_words = re.findall(r'\b[A-Za-z][A-Za-z0-9\-]{4,18}\b', target_text)
+
     stop_words = {
         "the", "and", "for", "that", "this", "with", "from", "while", "are", "was", "were",
         "have", "has", "had", "not", "but", "what", "all", "can", "more", "than", "into",
-        "over", "under", "their", "they", "its", "also", "such", "only", "which", "when"
+        "over", "under", "their", "they", "its", "also", "such", "only", "which", "when",
+        "round", "supporter", "contender", "however", "because", "between", "through",
+        "argument", "claim", "claims", "evidence", "study", "studies", "report", "reports",
+        "shows", "prove", "proves", "point", "points", "reality", "impact", "impacts",
+        "direct", "rebuttal", "front", "independent", "first", "second", "third", "every"
     }
-    words = re.findall(r'\b[A-Za-z][A-Za-z\-]{4,18}\b', last_turn_text)
+
     seen = set()
     keywords = []
-    for w in words:
+    for w in (anchor_words + body_words):
         lw = w.lower()
         if lw not in stop_words and lw not in seen:
             seen.add(lw)
             keywords.append(w)
-        if len(keywords) >= 6:
+        if len(keywords) >= 7:
             break
+
     return " ".join(keywords)
 
 def fetch_combined_research(topic: str, agent_role: str, current_round: int, last_opponent_text: str = "") -> str:
-    """Rotates search lenses by round and injects opponent keywords so each round fetches brand-new sources."""
+    """Universal, domain-agnostic search rotation across Economics, Tech, Geopolitics, Science, Psychology, and Philosophy."""
     tavily_key = os.environ.get("TAVILY_API_KEY", "").strip()
     exa_key = os.environ.get("EXA_API_KEY", "").strip()
 
@@ -207,22 +207,22 @@ def fetch_combined_research(topic: str, agent_role: str, current_round: int, las
 
     opp_terms = extract_opponent_focus_terms(last_opponent_text)
 
-    # Rotate analytical lens per round so Round 2 & Round 3 never repeat Round 1 queries
+    # Universal epistemic & analytical lenses that adapt to ANY domain
     if current_round == 1:
-        sup_tavily = "macroeconomic benefits fiscal savings empirical statistics government policy report"
-        sup_exa = f"Comprehensive empirical study and economic data proving the direct benefits and cost savings of {topic}"
-        con_tavily = "efficiency losses hidden subsidies capital costs empirical criticisms against"
-        con_exa = f"Critical policy analysis, structural trade-offs, and hidden fiscal costs challenging {topic}"
+        sup_tavily = f"empirical evidence data statistics proven benefits supporting {opp_terms}".strip()
+        sup_exa = f"Peer-reviewed research, institutional analysis, and empirical evidence demonstrating why {topic} holds true and succeeds"
+        con_tavily = f"criticisms counterarguments methodological flaws empirical risks against {opp_terms}".strip()
+        con_exa = f"Critical scholarly analysis, empirical counter-evidence, hidden trade-offs, and structural flaws refuting {topic} ({opp_terms})"
     elif current_round == 2:
-        sup_tavily = f"lifecycle emissions mitigation rural employment supply chain solutions {opp_terms}"
-        sup_exa = f"Scientific field trials, lifecycle optimization, and second-order economic gains refuting criticisms of {topic} ({opp_terms})"
-        con_tavily = f"lifecycle environmental footprint ecological strain resource diversion supply chain bottlenecks {opp_terms}"
-        con_exa = f"Deep environmental lifecycle assessment, resource depletion, and unintended systemic consequences of {topic} ({opp_terms})"
+        sup_tavily = f"{opp_terms} empirical validation real-world evidence refuting criticisms"
+        sup_exa = f"In-depth empirical study, comparative data, and real-world precedents validating {topic} and refuting objections regarding {opp_terms}"
+        con_tavily = f"{opp_terms} flawed assumptions confounding variables counter-evidence failure cases"
+        con_exa = f"Rigorous critique exposing baseline flaws, unmeasured trade-offs, and empirical counter-evidence against {topic} regarding {opp_terms}"
     else:
-        sup_tavily = f"long-term strategic resilience global benchmarks technological scaling success {opp_terms}"
-        sup_exa = f"Long-term comparative global benchmarks, technological scalability, and macro-resilience supporting {topic}"
-        con_tavily = f"superior policy alternatives long-term market distortions international failure precedents {opp_terms}"
-        con_exa = f"International failure cases, long-term market distortions, and superior policy alternatives to {topic}"
+        sup_tavily = f"{opp_terms} long-term viability historical precedent comparative success consensus"
+        sup_exa = f"Comprehensive comparative analysis and long-term evidence confirming the enduring validity and superiority of {topic} ({opp_terms})"
+        con_tavily = f"{opp_terms} unintended consequences systemic limitations superior alternatives"
+        con_exa = f"Deep structural critique of {topic} demonstrating long-term failure modes, systemic risks, and superior alternative frameworks ({opp_terms})"
 
     if agent_role == "Supporter":
         tavily_focus, exa_focus = sup_tavily, sup_exa
@@ -231,7 +231,7 @@ def fetch_combined_research(topic: str, agent_role: str, current_round: int, las
 
     snippets = []
 
-    # 1. TAVILY SEARCH (Top 2 Mainstream / Statistical Results)
+    # 1. TAVILY SEARCH (Top 2 Mainstream / Empirical Results)
     if tavily_key:
         try:
             tavily_client = TavilyClient(api_key=tavily_key)
@@ -253,7 +253,7 @@ def fetch_combined_research(topic: str, agent_role: str, current_round: int, las
         except Exception as e:
             gr.Warning(f"⚠️ Tavily search warning: {str(e)}. Continuing with Exa/internal data.")
 
-    # 2. EXA NEURAL SEARCH (Top 2 Deep / Independent Front Results)
+    # 2. EXA NEURAL SEARCH (Top 2 Deep / Scholarly / Contrarian Results)
     if exa_key:
         try:
             exa_client = Exa(api_key=exa_key)
@@ -273,7 +273,7 @@ def fetch_combined_research(topic: str, agent_role: str, current_round: int, las
             gr.Warning(f"⚠️ Exa search warning: {str(e)}. Continuing with Tavily/internal data.")
 
     if not snippets:
-        return "No external web snippets returned; rely on verified historical and empirical data."
+        return "No external web snippets returned; rely on verified historical, scientific, and empirical data."
 
     return "\n".join(snippets)
 
@@ -319,18 +319,20 @@ def load_system_prompt(agent_role: str, topic: str, current_round: int, max_roun
 
     if is_very_first_speech:
         phase_goal = (
-            "Opening Speech (Round 1) — Deliver 4 to 5 offensive bullets establishing your strongest empirical pillars "
-            "across distinct dimensions (economic, environmental, structural, and practical)."
+            "Opening Speech (Round 1) — Deliver 4 to 5 offensive bullets establishing your strongest foundational pillars "
+            "backed by verified evidence, clear baselines, and real-world precedents."
         )
     elif current_round < max_rounds:
         phase_goal = (
-            f"Clash & Expansion (Round {current_round}) — Dedicate your first 2 to 3 bullets to dismantling the opponent's "
-            "previous turn, and dedicate your final 1 to 2 bullets to opening a brand-new, unaddressed empirical angle."
+            f"Point-by-Point Audit & Expansion (Round {current_round}) — Dedicate your first 2 to 3 bullets to explicitly quoting "
+            "and dismantling the opponent's strongest specific claims/data from the previous turn (testing their baseline, scope, "
+            "causation, or uncounted trade-offs), then dedicate your final 1 to 2 bullets to opening a brand-new, independent front."
         )
     else:
         phase_goal = (
-            f"Final Closing Clash (Round {current_round}) — Dedicate your first 2 to 3 bullets to refuting the opponent's "
-            "latest claims, and dedicate your final 1 to 2 bullets to proving why your side wins the macro big picture."
+            f"Final Closing Clash (Round {current_round}) — Dedicate your first 2 to 3 bullets to resolving the central disputed claims "
+            "from the opponent's last turn (proving why their evidence or underlying premise fails), and dedicate your final 1 to 2 bullets "
+            "to locking in the overarching comparative conclusion."
         )
 
     populated = (
@@ -434,8 +436,8 @@ def build_tpm_safe_transcript(history: list) -> str:
         [f"[Round {m['round']} - {m['role']}]:\n{m['content']}" for m in selected]
     )
 
-def render_feed_html(topic: str, history: list, max_loops: int, verdict_text: str = "") -> str:
-    """Renders the scrollable stack of Supporter, Contender, and optional Final Verdict cards."""
+def render_feed_html(topic: str, history: list, max_loops: int) -> str:
+    """Renders the scrollable stack of Supporter and Contender cards."""
     if not history:
         return "<div style='padding:20px; text-align:center; color:#6b7280;'>Enter a proposition above and click <b>Start Debate</b> to begin Round 1.</div>"
 
@@ -462,18 +464,6 @@ def render_feed_html(topic: str, history: list, max_loops: int, verdict_text: st
                 <div class="card-body">{body_html}</div>
             </div>
             """)
-
-    if verdict_text:
-        verdict_html = markdown.markdown(verdict_text)
-        html_blocks.append(f"""
-        <div class="judge-card">
-            <div class="judge-header">
-                <span>⚖️ Neutral Adjudicator • Final Debate Verdict</span>
-                <span class="round-badge">Official Evaluation</span>
-            </div>
-            <div class="card-body">{verdict_html}</div>
-        </div>
-        """)
 
     return "\n".join(html_blocks)
 
@@ -532,7 +522,7 @@ def sanitize_for_pdf(text: str) -> str:
     return text.encode("latin-1", errors="ignore").decode("latin-1")
 
 def export_transcript_file(state):
-    """Generates a styled, paginated PDF file containing the full debate history and optional verdict."""
+    """Generates a styled, paginated PDF file containing the full debate history."""
     if not state or not state.get("history"):
         raise gr.Error("No debate content to export yet! Run at least one turn first.")
 
@@ -588,13 +578,6 @@ def export_transcript_file(state):
             padding: 10px 14px;
             margin-bottom: 14px;
         }}
-        .judge-card {{
-            background-color: #fefce8;
-            border-left: 4px solid #ca8a04;
-            padding: 10px 14px;
-            margin-top: 16px;
-            margin-bottom: 14px;
-        }}
         .header-sup {{
             font-weight: bold;
             color: #15803d;
@@ -605,12 +588,6 @@ def export_transcript_file(state):
             font-weight: bold;
             color: #b91c1c;
             font-size: 10pt;
-            margin-bottom: 6px;
-        }}
-        .header-judge {{
-            font-weight: bold;
-            color: #a16207;
-            font-size: 10.5pt;
             margin-bottom: 6px;
         }}
         p, li {{
@@ -646,16 +623,6 @@ def export_transcript_file(state):
             </div>
             """
 
-    if state.get("verdict"):
-        safe_verdict = sanitize_for_pdf(state["verdict"])
-        verdict_body_html = markdown.markdown(safe_verdict)
-        pdf_html += f"""
-        <div class="judge-card">
-            <div class="header-judge">Neutral Adjudicator - Final Debate Verdict</div>
-            {verdict_body_html}
-        </div>
-        """
-
     pdf_html += "</body></html>"
 
     temp_dir = tempfile.gettempdir()
@@ -669,54 +636,8 @@ def export_transcript_file(state):
 
     return filepath
 
-# ==========================================
-# ON-DEMAND NEUTRAL ADJUDICATOR VERDICT
-# ==========================================
-def run_judge_verdict(gemini_model, state):
-    """Generates an unbiased, data-driven final verdict on demand (zero search credits consumed)."""
-    if not state or len(state.get("history", [])) < 2:
-        raise gr.Error("Please complete at least Round 1 (both Supporter and Contender) before generating a verdict.")
-
-    if state.get("verdict"):
-        transcript_path = export_transcript_file(state)
-        return (
-            state,
-            render_feed_html(state["topic"], state["history"], state["max_loops"], state["verdict"]),
-            gr.update(value="⚖️ Verdict Generated", interactive=False),
-            gr.update(value=transcript_path, visible=True)
-        )
-
-    judge_system_prompt = (
-        "You are an impartial, elite Policy & Empirical Debate Adjudicator. "
-        "Evaluate the debate transcript objectively without bias or appeasement. "
-        "Keep your response concise (160 to 220 words total) in an elevated analytical style:\n"
-        "1. **Clash Assessment (1 short paragraph, 2-3 sentences):** Summarize the core tension and identify where the sharpest empirical clash occurred.\n"
-        "2. **Scorecard (3 bullet points):**\n"
-        "   - **Empirical Rigor & Citations:** Compare how effectively each side used verified statistics vs. generalizations.\n"
-        "   - **Rebuttal & Clash Execution:** Identify who directly dismantled the opponent's points vs. who dodged key risks.\n"
-        "   - **Real-World Feasibility:** Weigh the practical, economic, and structural realism of both arguments.\n"
-        "3. **Final Verdict (1 short paragraph, 2-3 sentences):** Declare the winning side (Supporter or Contender) and state the decisive reason why their case prevailed."
-    )
-
-    transcript = "\n\n".join(
-        [f"[Round {m['round']} - {m['role']} ({m['model']})]:\n{m['content']}" for m in state["history"]]
-    )
-    user_prompt = f"Proposition: \"{state['topic']}\"\n\nFull Debate Transcript:\n{transcript}\n\nDeliver your official Adjudicator Verdict."
-
-    verdict_raw = call_gemini_contender(judge_system_prompt, user_prompt, gemini_model, temperature=0.3)
-    state["verdict"] = clean_agent_output(verdict_raw)
-
-    transcript_path = export_transcript_file(state)
-
-    return (
-        state,
-        render_feed_html(state["topic"], state["history"], state["max_loops"], state["verdict"]),
-        gr.update(value="⚖️ Verdict Generated", interactive=False, visible=True),
-        gr.update(value=transcript_path, visible=True)
-    )
-
 def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, gemini_model, state):
-    """Executes a single step-by-step turn with daily quota protection, dynamic Tavily+Exa search, and PDF export."""
+    """Executes a single step-by-step turn with daily quota protection, universal Tavily+Exa search, and PDF export."""
     if not topic_input or not topic_input.strip():
         raise gr.Error("Please enter a debate topic or proposition first.")
 
@@ -738,19 +659,13 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
 
     if turn_idx >= total_turns:
         transcript_path = export_transcript_file(state)
-        verdict_btn_state = (
-            gr.update(value="⚖️ Verdict Generated", interactive=False, visible=True)
-            if state.get("verdict")
-            else gr.update(value="⚖️ Generate Final Verdict", interactive=True, visible=True)
-        )
         return (
             state,
-            render_feed_html(state["topic"], state["history"], state["max_loops"], state.get("verdict", "")),
+            render_feed_html(state["topic"], state["history"], state["max_loops"]),
             gr.update(value="🏁 Debate Concluded", interactive=False),
             gr.update(interactive=False),
             gr.update(interactive=False),
-            gr.update(value=transcript_path, visible=True),
-            verdict_btn_state
+            gr.update(value=transcript_path, visible=True)
         )
 
     current_round = (turn_idx // 2) + 1
@@ -761,10 +676,10 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     wait_sec = int(cooldown_input)
     enforce_wait_time(state.get("last_agent_ts", 0.0), wait_sec, f"{agent_role} (Round {current_round})")
 
-    # Extract opponent's last speech so Round 2+ search pulls targeted counter-evidence
+    # Extract opponent's last speech bullet terms so search pulls targeted counter-evidence
     last_opponent_text = state["history"][-1]["content"] if state["history"] else ""
 
-    # Fetch live verified facts & figures from BOTH Tavily and Exa with dynamic round lens
+    # Fetch live verified facts & figures from BOTH Tavily and Exa with universal round lens
     web_facts = fetch_combined_research(current_topic, agent_role, current_round, last_opponent_text)
 
     system_prompt = load_system_prompt(
@@ -777,10 +692,10 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
 
     research_block = (
         f"VERIFIED LIVE WEB RESEARCH (Round {current_round} Tavily + Exa Neural Search):\n{web_facts}\n\n"
-        f"CRITICAL RULES FOR THIS TURN:\n"
-        f"1. Cite actual organization, journal, or publication names (e.g., NITI Aayog, ICRIER, World Bank). NEVER output '(Source 1)' or '(Source 2)'.\n"
-        f"2. Start every bullet directly with its bolded analytical point (e.g., '**Lifecycle emissions gap:** ...'). NEVER start a bullet with labels like 'Rebuttal:', 'Direct Rebuttal:', or 'New Front:'.\n"
-        f"3. ANTI-FABRICATION RULE: Never invent convenient counter-numbers to refute an opponent's statistic. If an exact counter-stat is not in the research, attack the methodology, lifecycle boundary, or structural trade-off using verified data."
+        f"UNIVERSAL RULES FOR THIS TURN:\n"
+        f"1. CITE NAMED SOURCES: Cite actual institutions, peer-reviewed journals, think tanks, or publications from the research. NEVER output '(Source 1)' or '(Source 2)'.\n"
+        f"2. NO META-PREFIXES: Start every bullet directly with its bolded analytical point. NEVER start a bullet with labels like 'Rebuttal:', 'Direct Rebuttal:', or 'New Front:'.\n"
+        f"3. NAME THE CLAIM & AUDIT THE PREMISE/SCOPE: Whenever an opponent has spoken, your first 2 to 3 bullets MUST explicitly reference the opponent's specific claims, figures, or studies from their last turn and dismantle their baseline, methodology, causal link, or uncounted trade-offs before introducing your 1 to 2 new independent fronts."
     )
 
     if not state["history"]:
@@ -790,7 +705,8 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         user_prompt = (
             f"Here is the debate transcript so far:\n\n{transcript}\n\n"
             f"{research_block}\n\n"
-            f"Now deliver your Round {current_round} response as the {agent_role}. Do not repeat studies or arguments you already used in earlier rounds."
+            f"Now deliver your Round {current_round} response as the {agent_role}. "
+            f"Ensure your first 2-3 bullets directly quote and audit the opponent's strongest claims from their previous speech before opening 1-2 new independent fronts."
         )
 
     if agent_role == "Supporter":
@@ -839,22 +755,13 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     # Prepare updated PDF file so DownloadButton works immediately on click
     transcript_path = export_transcript_file(state)
 
-    # Show the On-Demand Verdict button once at least Round 1 is completed (2 turns)
-    show_verdict_btn = (new_turn_idx >= 2)
-    verdict_btn_update = gr.update(
-        value="⚖️ Generate Final Verdict",
-        visible=show_verdict_btn,
-        interactive=(not bool(state.get("verdict")))
-    )
-
     return (
         state,
-        render_feed_html(state["topic"], state["history"], state["max_loops"], state.get("verdict", "")),
+        render_feed_html(state["topic"], state["history"], state["max_loops"]),
         gr.update(value=btn_label, interactive=btn_interactive),
         gr.update(interactive=False),
         gr.update(interactive=False),
-        gr.update(value=transcript_path, visible=True),
-        verdict_btn_update
+        gr.update(value=transcript_path, visible=True)
     )
 
 def reset_debate():
@@ -864,17 +771,15 @@ def reset_debate():
         "active": False,
         "topic": "",
         "max_loops": DEFAULT_MAX_LOOPS,
-        "last_agent_ts": 0.0,
-        "verdict": ""
+        "last_agent_ts": 0.0
     }
     return (
         fresh_state,
-        render_feed_html("", [], DEFAULT_MAX_LOOPS, ""),
+        render_feed_html("", [], DEFAULT_MAX_LOOPS),
         gr.update(value="🚀 Start Debate (Trigger Round 1: Supporter [Groq])", interactive=True),
         gr.update(value="", interactive=True),
         gr.update(value=DEFAULT_MAX_LOOPS, interactive=True),
-        gr.update(value=None, visible=False),
-        gr.update(value="⚖️ Generate Final Verdict", visible=False, interactive=True)
+        gr.update(value=None, visible=False)
     )
 
 # ==========================================
@@ -887,8 +792,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
         "active": False,
         "topic": "",
         "max_loops": DEFAULT_MAX_LOOPS,
-        "last_agent_ts": 0.0,
-        "verdict": ""
+        "last_agent_ts": 0.0
     })
 
     gr.Markdown("# ⚖️ The Multi-Agent AI Debate Engine\n*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`) • Grounded with Live Tavily + Exa Neural Search*")
@@ -940,7 +844,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
                 gemini_model_dropdown = gr.Dropdown(
                     choices=["gemini-2.5-flash", "gemini-2.5-pro"],
                     value="gemini-2.5-flash",
-                    label="🔴 Contender / Adjudicator Model (Gemini)",
+                    label="🔴 Contender Model (Gemini)",
                     scale=1
                 )
 
@@ -952,7 +856,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
             )
             reset_btn = gr.Button("🔄 Reset / New Debate", variant="secondary", scale=1)
 
-        feed_html = gr.HTML(value=render_feed_html("", [], DEFAULT_MAX_LOOPS, ""))
+        feed_html = gr.HTML(value=render_feed_html("", [], DEFAULT_MAX_LOOPS))
 
         with gr.Row():
             next_turn_btn = gr.Button(
@@ -960,13 +864,6 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
                 variant="primary",
                 size="lg",
                 scale=3
-            )
-            verdict_btn = gr.Button(
-                "⚖️ Generate Final Verdict",
-                variant="secondary",
-                size="lg",
-                visible=False,
-                scale=1
             )
             export_btn = gr.DownloadButton(
                 "📥 Download Transcript (.pdf)",
@@ -992,13 +889,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
     next_turn_btn.click(
         fn=run_debate_step,
         inputs=[topic_box, loops_slider, cooldown_slider, groq_model_dropdown, gemini_model_dropdown, debate_state],
-        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn, verdict_btn]
-    )
-
-    verdict_btn.click(
-        fn=run_judge_verdict,
-        inputs=[gemini_model_dropdown, debate_state],
-        outputs=[debate_state, feed_html, verdict_btn, export_btn]
+        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn]
     )
 
     export_btn.click(
@@ -1010,7 +901,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
     reset_btn.click(
         fn=reset_debate,
         inputs=[],
-        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn, verdict_btn]
+        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn]
     )
 
 if __name__ == "__main__":
