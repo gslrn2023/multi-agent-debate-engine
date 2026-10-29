@@ -1,3 +1,15 @@
+# ==============================================================================
+# MULTI-AGENT AI DEBATE ENGINE
+# Version: v2.4.0 | Date: 2026-10-29
+# Changelog (v2.4.0):
+#   - Added TRACE flag (ON/OFF) for backend search & prompt observability.
+#   - Added dynamic "{topic}_trace_log.json" export & UI DownloadButton when TRACE=True.
+#   - Expanded Tavily (450 chars) & Exa (500 chars) snippet windows to prevent starvation.
+#   - Lowered agent temperatures (Groq: 0.35, Gemini: 0.40) to suppress hallucinations.
+#   - Enforced 100% Universal Domain-Agnostic Search Lenses & Bullet Keyword Extraction.
+#   - Removed Adjudicator module completely to eliminate quantification bias.
+# ==============================================================================
+
 import os
 import re
 import json
@@ -17,11 +29,13 @@ from exa_py import Exa
 from xhtml2pdf import pisa
 
 # ==========================================
-# CONFIGURABLE VARIABLES (LOOPS, WAIT & DAILY LIMIT)
+# VERSION & CONFIGURABLE ENGINE VARIABLES
 # ==========================================
-DEFAULT_MAX_LOOPS = 3       # // adjust the value here // (Default & Max number of debate loops/rounds)
-DEFAULT_WAIT_TIME_SEC = 30  # // adjust the value here // (Wait time in seconds between EACH AI agent execution)
-MAX_DAILY_DEBATES = 5       # // adjust the value here // (Global max debates per day across all users)
+APP_VERSION = "v2.4.0"
+TRACE = True                # // Set True to enable JSON trace logging & UI download button; Set False for production //
+DEFAULT_MAX_LOOPS = 3       # // Default & Max number of debate loops/rounds //
+DEFAULT_WAIT_TIME_SEC = 30  # // Wait time in seconds between EACH AI agent execution //
+MAX_DAILY_DEBATES = 5       # // Global max debates per day across all users //
 DAILY_LIMIT_FILE = "daily_limit.json"
 DAILY_LIMIT_LOCK = threading.Lock()
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
@@ -172,7 +186,7 @@ def extract_opponent_focus_terms(last_turn_text: str) -> str:
     bold_chunks = re.findall(r'\*\*([^\*]{3,45})\*\*', target_text)
     anchor_words = re.findall(r'\b[A-Za-z][A-Za-z0-9\-]{3,18}\b', " ".join(bold_chunks))
 
-    # 2. Extract capitalized entities / proper nouns and substantive terms from bullet bodies
+    # 2. Extract substantive terms and entities from bullet bodies
     body_words = re.findall(r'\b[A-Za-z][A-Za-z0-9\-]{4,18}\b', target_text)
 
     stop_words = {
@@ -197,8 +211,11 @@ def extract_opponent_focus_terms(last_turn_text: str) -> str:
 
     return " ".join(keywords)
 
-def fetch_combined_research(topic: str, agent_role: str, current_round: int, last_opponent_text: str = "") -> str:
-    """Universal, domain-agnostic search rotation across Economics, Tech, Geopolitics, Science, Psychology, and Philosophy."""
+def fetch_combined_research(topic: str, agent_role: str, current_round: int, last_opponent_text: str = "") -> tuple[str, dict]:
+    """
+    Universal, domain-agnostic search rotation across Economics, Tech, Geopolitics, Science, Psychology, and Philosophy.
+    Returns: (formatted_snippets_string, trace_metadata_dict)
+    """
     tavily_key = os.environ.get("TAVILY_API_KEY", "").strip()
     exa_key = os.environ.get("EXA_API_KEY", "").strip()
 
@@ -207,21 +224,21 @@ def fetch_combined_research(topic: str, agent_role: str, current_round: int, las
 
     opp_terms = extract_opponent_focus_terms(last_opponent_text)
 
-    # Universal epistemic & analytical lenses that adapt to ANY domain
+    # Universal epistemic & analytical lenses (100% domain-agnostic)
     if current_round == 1:
-        sup_tavily = f"empirical evidence data statistics proven benefits supporting {opp_terms}".strip()
+        sup_tavily = f"empirical evidence data benchmark studies proven benefits {opp_terms}".strip()
         sup_exa = f"Peer-reviewed research, institutional analysis, and empirical evidence demonstrating why {topic} holds true and succeeds"
-        con_tavily = f"criticisms counterarguments methodological flaws empirical risks against {opp_terms}".strip()
+        con_tavily = f"empirical criticisms structural limitations counterarguments risks {opp_terms}".strip()
         con_exa = f"Critical scholarly analysis, empirical counter-evidence, hidden trade-offs, and structural flaws refuting {topic} ({opp_terms})"
     elif current_round == 2:
-        sup_tavily = f"{opp_terms} empirical validation real-world evidence refuting criticisms"
+        sup_tavily = f"{opp_terms} empirical validation real-world evidence refuting objections"
         sup_exa = f"In-depth empirical study, comparative data, and real-world precedents validating {topic} and refuting objections regarding {opp_terms}"
-        con_tavily = f"{opp_terms} flawed assumptions confounding variables counter-evidence failure cases"
+        con_tavily = f"{opp_terms} counter-evidence flawed assumptions confounding variables failure cases"
         con_exa = f"Rigorous critique exposing baseline flaws, unmeasured trade-offs, and empirical counter-evidence against {topic} regarding {opp_terms}"
     else:
-        sup_tavily = f"{opp_terms} long-term viability historical precedent comparative success consensus"
+        sup_tavily = f"{opp_terms} long-term viability historical precedent comparative superiority consensus"
         sup_exa = f"Comprehensive comparative analysis and long-term evidence confirming the enduring validity and superiority of {topic} ({opp_terms})"
-        con_tavily = f"{opp_terms} unintended consequences systemic limitations superior alternatives"
+        con_tavily = f"{opp_terms} systemic trade-offs unintended consequences superior alternatives"
         con_exa = f"Deep structural critique of {topic} demonstrating long-term failure modes, systemic risks, and superior alternative frameworks ({opp_terms})"
 
     if agent_role == "Supporter":
@@ -229,13 +246,17 @@ def fetch_combined_research(topic: str, agent_role: str, current_round: int, las
     else:
         tavily_focus, exa_focus = con_tavily, con_exa
 
-    snippets = []
+    t_query = f"{topic[:200]} {tavily_focus}"[:380]
+    e_query = exa_focus[:360]
 
-    # 1. TAVILY SEARCH (Top 2 Mainstream / Empirical Results)
+    snippets = []
+    tavily_trace_records = []
+    exa_trace_records = []
+
+    # 1. TAVILY SEARCH (Top 2 Mainstream / Empirical Results — Expanded to 450 chars)
     if tavily_key:
         try:
             tavily_client = TavilyClient(api_key=tavily_key)
-            t_query = f"{topic[:200]} {tavily_focus}"[:380]
             t_resp = tavily_client.search(
                 query=t_query,
                 search_depth="basic",
@@ -243,39 +264,73 @@ def fetch_combined_research(topic: str, agent_role: str, current_round: int, las
                 include_answer=True
             )
             if t_resp.get("answer"):
-                snippets.append(f"- **[Tavily Overview]:** {t_resp['answer'][:260]}")
+                ans_text = t_resp["answer"][:380]
+                snippets.append(f"- **[Tavily Synthesis]:** {ans_text}")
+                tavily_trace_records.append({
+                    "type": "tavily_answer",
+                    "title": "Tavily AI Synthesis",
+                    "url": "N/A",
+                    "snippet": ans_text
+                })
 
             for res in t_resp.get("results", []):
                 title = res.get("title", "Verified Report").strip()
                 url = res.get("url", "")
-                content = res.get("content", "").strip().replace("\n", " ")[:280]
+                content = res.get("content", "").strip().replace("\n", " ")[:450]
                 snippets.append(f"- **[Publication: {title} | {url}]:** {content}...")
+                tavily_trace_records.append({
+                    "type": "tavily_result",
+                    "title": title,
+                    "url": url,
+                    "snippet": content
+                })
         except Exception as e:
-            gr.Warning(f"⚠️ Tavily search warning: {str(e)}. Continuing with Exa/internal data.")
+            err_str = str(e)
+            gr.Warning(f"⚠️ Tavily search warning: {err_str}. Continuing with Exa/internal data.")
+            tavily_trace_records.append({"error": err_str})
 
-    # 2. EXA NEURAL SEARCH (Top 2 Deep / Scholarly / Contrarian Results)
+    # 2. EXA NEURAL SEARCH (Top 2 Deep / Scholarly / Contrarian Results — Expanded to 500 chars)
     if exa_key:
         try:
             exa_client = Exa(api_key=exa_key)
             e_resp = exa_client.search_and_contents(
-                exa_focus[:360],
+                e_query,
                 type="auto",
                 num_results=2,
-                text={"max_characters": 320}
+                text={"max_characters": 500}
             )
             for res in getattr(e_resp, "results", []):
                 title = (getattr(res, "title", None) or "Research Analysis").strip()
                 url = getattr(res, "url", "")
-                text_body = (getattr(res, "text", "") or "").strip().replace("\n", " ")[:280]
+                text_body = (getattr(res, "text", "") or "").strip().replace("\n", " ")[:480]
                 if text_body:
                     snippets.append(f"- **[Deep Study: {title} | {url}]:** {text_body}...")
+                    exa_trace_records.append({
+                        "type": "exa_result",
+                        "title": title,
+                        "url": url,
+                        "snippet": text_body
+                    })
         except Exception as e:
-            gr.Warning(f"⚠️ Exa search warning: {str(e)}. Continuing with Tavily/internal data.")
+            err_str = str(e)
+            gr.Warning(f"⚠️ Exa search warning: {err_str}. Continuing with Tavily/internal data.")
+            exa_trace_records.append({"error": err_str})
 
     if not snippets:
-        return "No external web snippets returned; rely on verified historical, scientific, and empirical data."
+        combined_text = "No external web snippets returned; rely on verified historical, scientific, and empirical logic."
+    else:
+        combined_text = "\n".join(snippets)
 
-    return "\n".join(snippets)
+    trace_meta = {
+        "extracted_opponent_keywords": opp_terms,
+        "tavily_dispatched_query": t_query,
+        "exa_dispatched_prompt": e_query,
+        "tavily_results": tavily_trace_records,
+        "exa_results": exa_trace_records,
+        "combined_research_char_length": len(combined_text)
+    }
+
+    return combined_text, trace_meta
 
 # ==========================================
 # OUTPUT SANITIZER (STRIPS LEAKED LABELS)
@@ -320,18 +375,18 @@ def load_system_prompt(agent_role: str, topic: str, current_round: int, max_roun
     if is_very_first_speech:
         phase_goal = (
             "Opening Speech (Round 1) — Deliver 4 to 5 offensive bullets establishing your strongest foundational pillars "
-            "backed by verified evidence, clear baselines, and real-world precedents."
+            "backed by verified evidence, clear baselines, and real-world precedents from the provided research."
         )
     elif current_round < max_rounds:
         phase_goal = (
             f"Point-by-Point Audit & Expansion (Round {current_round}) — Dedicate your first 2 to 3 bullets to explicitly quoting "
-            "and dismantling the opponent's strongest specific claims/data from the previous turn (testing their baseline, scope, "
-            "causation, or uncounted trade-offs), then dedicate your final 1 to 2 bullets to opening a brand-new, independent front."
+            "and dismantling the opponent's strongest specific claims from the previous turn (using Empirical, Methodological, "
+            "or Structural/Causal audits), then dedicate your final 1 to 2 bullets to opening a brand-new, independent front."
         )
     else:
         phase_goal = (
             f"Final Closing Clash (Round {current_round}) — Dedicate your first 2 to 3 bullets to resolving the central disputed claims "
-            "from the opponent's last turn (proving why their evidence or underlying premise fails), and dedicate your final 1 to 2 bullets "
+            "from the opponent's last turn (proving why their evidence, baseline, or causal premise fails), and dedicate your final 1 to 2 bullets "
             "to locking in the overarching comparative conclusion."
         )
 
@@ -343,7 +398,7 @@ def load_system_prompt(agent_role: str, topic: str, current_round: int, max_roun
         .replace("{phase_goal}", phase_goal)
     )
 
-    return f"{populated}\n\n--- LIVE DEBATE CONTEXT ---\nProposition: \"{topic}\"\nCurrent Round: {current_round} of {max_rounds}\nRound Objective: {phase_goal}"
+    return f"{populated}\n\n--- LIVE DEBATE CONTEXT ({APP_VERSION}) ---\nProposition: \"{topic}\"\nCurrent Round: {current_round} of {max_rounds}\nRound Objective: {phase_goal}"
 
 def enforce_wait_time(last_call_ts: float, wait_sec: int, next_agent_label: str):
     """Strictly pauses execution between EACH AI agent turn if clicked faster than wait_sec."""
@@ -369,8 +424,8 @@ def call_with_rate_limit_retry(api_func, provider_name: str, max_retries: int = 
             else:
                 raise gr.Error(f"{provider_name} API Error: {str(e)}")
 
-def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str) -> str:
-    """Calls Groq API (optimized for openai/gpt-oss-120b reasoning model and standard Llama models)."""
+def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str, temperature: float = 0.35) -> str:
+    """Calls Groq API with calibrated low temperature (0.35) to prevent synthetic entity/stat fabrication."""
     groq_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not groq_key:
         raise gr.Error("Missing GROQ_API_KEY in Hugging Face Space Secrets.")
@@ -382,7 +437,7 @@ def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str) -
         kwargs = {
             "model": groq_model,
             "messages": [{"role": "user", "content": combined_prompt}],
-            "temperature": 0.6,
+            "temperature": temperature,
             "max_completion_tokens": 2048,
         }
         if "gpt-oss" in groq_model:
@@ -396,8 +451,8 @@ def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str) -
 
     return call_with_rate_limit_retry(_execute, "Groq")
 
-def call_gemini_contender(system_prompt: str, user_prompt: str, gemini_model: str, temperature: float = 0.6) -> str:
-    """Calls Gemini API with dedicated thinking budget + ample output token headroom."""
+def call_gemini_contender(system_prompt: str, user_prompt: str, gemini_model: str, temperature: float = 0.40) -> str:
+    """Calls Gemini API with calibrated temperature (0.40) and dedicated thinking budget."""
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not gemini_key:
         raise gr.Error("Missing GEMINI_API_KEY in Hugging Face Space Secrets.")
@@ -439,7 +494,7 @@ def build_tpm_safe_transcript(history: list) -> str:
 def render_feed_html(topic: str, history: list, max_loops: int) -> str:
     """Renders the scrollable stack of Supporter and Contender cards."""
     if not history:
-        return "<div style='padding:20px; text-align:center; color:#6b7280;'>Enter a proposition above and click <b>Start Debate</b> to begin Round 1.</div>"
+        return "<div style='padding:20px; text-align:center; color:#6b7280;'>Enter any proposition above and click <b>Start Debate</b> to begin Round 1.</div>"
 
     html_blocks = [f"<h3 style='margin-bottom:14px;'>Proposition: <em>{topic}</em></h3>"]
     for msg in history:
@@ -468,14 +523,13 @@ def render_feed_html(topic: str, history: list, max_loops: int) -> str:
     return "\n".join(html_blocks)
 
 # ==========================================
-# PDF TEXT SANITIZER & TRANSCRIPT EXPORTER
+# PDF TEXT SANITIZER, PDF EXPORTER & JSON TRACE EXPORTER
 # ==========================================
 def sanitize_for_pdf(text: str) -> str:
     """Normalizes subscripts/superscripts (e.g. CO₂ -> CO2) and converts Unicode punctuation for xhtml2pdf."""
     if not text:
         return ""
 
-    # 1. Explicit punctuation & currency replacements before NFKD decomposition
     replacements = {
         "\u2010": "-",   # Hyphen
         "\u2011": "-",   # Non-breaking hyphen
@@ -515,11 +569,16 @@ def sanitize_for_pdf(text: str) -> str:
     for unicode_char, ascii_equiv in replacements.items():
         text = text.replace(unicode_char, ascii_equiv)
 
-    # 2. 1-Line NFKD Compatibility Decomposition: automatically turns CO₂ -> CO2, H₂O -> H2O, 10⁶ -> 106, ½ -> 1/2
+    # 1-Line NFKD Compatibility Decomposition: automatically turns CO₂ -> CO2, H₂O -> H2O, 10⁶ -> 106, ½ -> 1/2
     text = unicodedata.normalize("NFKD", text)
 
-    # 3. Guarantee only Latin-1 printable characters reach xhtml2pdf's built-in Helvetica font
     return text.encode("latin-1", errors="ignore").decode("latin-1")
+
+def _get_clean_topic_slug(raw_topic: str) -> str:
+    """Helper to generate a clean filename slug from the debate topic."""
+    safe_topic = sanitize_for_pdf(raw_topic or "Debate")
+    clean_topic = re.sub(r'[^a-zA-Z0-9_\- ]', '', safe_topic).strip().replace(" ", "_")[:40]
+    return clean_topic if clean_topic else "Debate"
 
 def export_transcript_file(state):
     """Generates a styled, paginated PDF file containing the full debate history."""
@@ -528,16 +587,13 @@ def export_transcript_file(state):
 
     raw_topic = state.get("topic", "Debate")
     safe_topic = sanitize_for_pdf(raw_topic)
-    clean_topic = re.sub(r'[^a-zA-Z0-9_\- ]', '', safe_topic).strip().replace(" ", "_")[:40]
-    if not clean_topic:
-        clean_topic = "Transcript"
-    filename = f"Debate_{clean_topic}.pdf"
+    clean_slug = _get_clean_topic_slug(raw_topic)
+    filename = f"Debate_{clean_slug}.pdf"
 
     total_turns_done = state.get("current_turn", 0)
     rounds_completed = (total_turns_done + 1) // 2
     now_ist = datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S IST')
 
-    # PDF Stylesheet
     pdf_html = f"""
     <html>
     <head>
@@ -596,7 +652,7 @@ def export_transcript_file(state):
     </style>
     </head>
     <body>
-        <h1>Multi-Agent AI Debate Transcript</h1>
+        <h1>Multi-Agent AI Debate Transcript ({APP_VERSION})</h1>
         <div class="meta">
             <b>Proposition:</b> {safe_topic}<br/>
             <b>Date:</b> {now_ist} | 
@@ -636,8 +692,38 @@ def export_transcript_file(state):
 
     return filepath
 
+def export_trace_json_file(state):
+    """Generates a structured JSON file '{topic}_trace_log.json' when TRACE is ON."""
+    if not state or not state.get("trace_logs"):
+        return None
+
+    raw_topic = state.get("topic", "Debate")
+    clean_slug = _get_clean_topic_slug(raw_topic).lower()
+    filename = f"{clean_slug}_trace_log.json"
+
+    payload = {
+        "engine_version": APP_VERSION,
+        "trace_enabled": TRACE,
+        "topic": raw_topic,
+        "exported_at_ist": datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S IST'),
+        "max_rounds_configured": state.get("max_loops", DEFAULT_MAX_LOOPS),
+        "total_turns_recorded": len(state.get("trace_logs", [])),
+        "turns": state.get("trace_logs", [])
+    }
+
+    temp_dir = tempfile.gettempdir()
+    filepath = os.path.join(temp_dir, filename)
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    return filepath
+
+# ==========================================
+# MAIN STEP-BY-STEP DEBATE ORCHESTRATOR
+# ==========================================
 def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, gemini_model, state):
-    """Executes a single step-by-step turn with daily quota protection, universal Tavily+Exa search, and PDF export."""
+    """Executes a single step-by-step turn with daily quota protection, universal Tavily+Exa search, PDF export, and TRACE JSON logging."""
     if not topic_input or not topic_input.strip():
         raise gr.Error("Please enter a debate topic or proposition first.")
 
@@ -659,13 +745,15 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
 
     if turn_idx >= total_turns:
         transcript_path = export_transcript_file(state)
+        trace_path = export_trace_json_file(state) if TRACE else None
         return (
             state,
             render_feed_html(state["topic"], state["history"], state["max_loops"]),
             gr.update(value="🏁 Debate Concluded", interactive=False),
             gr.update(interactive=False),
             gr.update(interactive=False),
-            gr.update(value=transcript_path, visible=True)
+            gr.update(value=transcript_path, visible=True),
+            gr.update(value=trace_path, visible=bool(TRACE and trace_path))
         )
 
     current_round = (turn_idx // 2) + 1
@@ -679,8 +767,8 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     # Extract opponent's last speech bullet terms so search pulls targeted counter-evidence
     last_opponent_text = state["history"][-1]["content"] if state["history"] else ""
 
-    # Fetch live verified facts & figures from BOTH Tavily and Exa with universal round lens
-    web_facts = fetch_combined_research(current_topic, agent_role, current_round, last_opponent_text)
+    # Fetch live verified facts & figures from BOTH Tavily and Exa + capture trace metadata
+    web_facts, trace_meta = fetch_combined_research(current_topic, agent_role, current_round, last_opponent_text)
 
     system_prompt = load_system_prompt(
         agent_role=agent_role,
@@ -693,9 +781,9 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     research_block = (
         f"VERIFIED LIVE WEB RESEARCH (Round {current_round} Tavily + Exa Neural Search):\n{web_facts}\n\n"
         f"UNIVERSAL RULES FOR THIS TURN:\n"
-        f"1. CITE NAMED SOURCES: Cite actual institutions, peer-reviewed journals, think tanks, or publications from the research. NEVER output '(Source 1)' or '(Source 2)'.\n"
-        f"2. NO META-PREFIXES: Start every bullet directly with its bolded analytical point. NEVER start a bullet with labels like 'Rebuttal:', 'Direct Rebuttal:', or 'New Front:'.\n"
-        f"3. NAME THE CLAIM & AUDIT THE PREMISE/SCOPE: Whenever an opponent has spoken, your first 2 to 3 bullets MUST explicitly reference the opponent's specific claims, figures, or studies from their last turn and dismantle their baseline, methodology, causal link, or uncounted trade-offs before introducing your 1 to 2 new independent fronts."
+        f"1. STRICT ENTITY & FACT BOUNDARY: You may ONLY cite specific acts, laws, official programs, simulations, or numerical figures that appear in the VERIFIED LIVE WEB RESEARCH above or well-established historical record. NEVER fabricate statutory acts, regulatory caps, agency audits, or synthetic percentages.\n"
+        f"2. THREE VALID REBUTTAL MODES: When dismantling the opponent's prior turn (first 2 to 3 bullets), if an exact counter-statistic is not in the research snippets, execute a Methodological/Scope Audit (exposing flawed baselines, sample bias, or uncounted trade-offs) or a Structural/Causal Audit (exposing broken causation or real-world friction) instead of inventing numbers.\n"
+        f"3. NO META-PREFIXES: Start every bullet directly with its bolded analytical point. NEVER start a bullet with labels like 'Rebuttal:', 'Direct Rebuttal:', or 'New Front:'."
     )
 
     if not state["history"]:
@@ -706,14 +794,14 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
             f"Here is the debate transcript so far:\n\n{transcript}\n\n"
             f"{research_block}\n\n"
             f"Now deliver your Round {current_round} response as the {agent_role}. "
-            f"Ensure your first 2-3 bullets directly quote and audit the opponent's strongest claims from their previous speech before opening 1-2 new independent fronts."
+            f"Ensure your first 2-3 bullets explicitly quote and audit the opponent's strongest claims from their previous speech before opening 1-2 new independent fronts."
         )
 
     if agent_role == "Supporter":
-        raw_reply = call_groq_supporter(system_prompt, user_prompt, groq_model)
+        raw_reply = call_groq_supporter(system_prompt, user_prompt, groq_model, temperature=0.35)
         used_model = groq_model
     else:
-        raw_reply = call_gemini_contender(system_prompt, user_prompt, gemini_model)
+        raw_reply = call_gemini_contender(system_prompt, user_prompt, gemini_model, temperature=0.40)
         used_model = gemini_model
 
     reply_text = clean_agent_output(raw_reply)
@@ -735,10 +823,34 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         "model": used_model,
         "content": reply_text
     })
-    state["current_turn"] += 1
 
-    # Also log to Hugging Face container console for live monitoring under the "Logs" tab
-    print(f"\n{'='*50}\n[DEBATE TURN COMPLETED] Topic: {state['topic']} | Round {current_round} | {agent_role} ({used_model})\n{'='*50}")
+    # Record structured trace entry when TRACE is ON
+    if TRACE:
+        turn_trace_entry = {
+            "turn_number": turn_idx + 1,
+            "round": current_round,
+            "role": agent_role,
+            "model": used_model,
+            "timestamp_ist": datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S IST'),
+            "extracted_opponent_keywords": trace_meta["extracted_opponent_keywords"],
+            "tavily_dispatched_query": trace_meta["tavily_dispatched_query"],
+            "exa_dispatched_prompt": trace_meta["exa_dispatched_prompt"],
+            "tavily_results": trace_meta["tavily_results"],
+            "exa_results": trace_meta["exa_results"],
+            "injected_research_block_chars": trace_meta["combined_research_char_length"],
+            "raw_model_output": raw_reply,
+            "cleaned_model_output": reply_text
+        }
+        state.setdefault("trace_logs", []).append(turn_trace_entry)
+        print(f"\n{'='*60}\n[TRACE {APP_VERSION}] Round {current_round} | {agent_role} ({used_model})")
+        print(f"  -> Opponent Keywords : {trace_meta['extracted_opponent_keywords']}")
+        print(f"  -> Tavily Query      : {trace_meta['tavily_dispatched_query']}")
+        print(f"  -> Exa Prompt        : {trace_meta['exa_dispatched_prompt']}")
+        print(f"  -> Snippet Payload   : {trace_meta['combined_research_char_length']} chars\n{'='*60}")
+    else:
+        print(f"\n{'='*50}\n[DEBATE TURN COMPLETED] Topic: {state['topic']} | Round {current_round} | {agent_role} ({used_model})\n{'='*50}")
+
+    state["current_turn"] += 1
 
     new_turn_idx = state["current_turn"]
     if new_turn_idx < total_turns:
@@ -752,8 +864,9 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         btn_label = f"🏁 Debate Complete ({state['max_loops']} Rounds Finished) — Click Reset for New Topic"
         btn_interactive = False
 
-    # Prepare updated PDF file so DownloadButton works immediately on click
+    # Prepare updated PDF file and optional Trace JSON file
     transcript_path = export_transcript_file(state)
+    trace_path = export_trace_json_file(state) if TRACE else None
 
     return (
         state,
@@ -761,12 +874,14 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         gr.update(value=btn_label, interactive=btn_interactive),
         gr.update(interactive=False),
         gr.update(interactive=False),
-        gr.update(value=transcript_path, visible=True)
+        gr.update(value=transcript_path, visible=True),
+        gr.update(value=trace_path, visible=bool(TRACE and trace_path))
     )
 
 def reset_debate():
     fresh_state = {
         "history": [],
+        "trace_logs": [],
         "current_turn": 0,
         "active": False,
         "topic": "",
@@ -779,15 +894,17 @@ def reset_debate():
         gr.update(value="🚀 Start Debate (Trigger Round 1: Supporter [Groq])", interactive=True),
         gr.update(value="", interactive=True),
         gr.update(value=DEFAULT_MAX_LOOPS, interactive=True),
+        gr.update(value=None, visible=False),
         gr.update(value=None, visible=False)
     )
 
 # ==========================================
 # PHASE 3: GRADIO INTERFACE (WITH PASSWORD GATE)
 # ==========================================
-with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
+with gr.Blocks(css=CUSTOM_CSS, title=f"Multi-Agent AI Debate Engine ({APP_VERSION})") as demo:
     debate_state = gr.State({
         "history": [],
+        "trace_logs": [],
         "current_turn": 0,
         "active": False,
         "topic": "",
@@ -795,7 +912,11 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
         "last_agent_ts": 0.0
     })
 
-    gr.Markdown("# ⚖️ The Multi-Agent AI Debate Engine\n*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`) • Grounded with Live Tavily + Exa Neural Search*")
+    trace_badge = " • 🔍 `TRACE: ON`" if TRACE else ""
+    gr.Markdown(
+        f"# ⚖️ The Multi-Agent AI Debate Engine (`{APP_VERSION}`)\n"
+        f"*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`) • Grounded with Live Tavily + Exa Neural Search{trace_badge}*"
+    )
 
     # ------------------------------------------
     # 1. PASSWORD GATE SCREEN (SHOWN FIRST)
@@ -850,8 +971,8 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
 
         with gr.Row():
             topic_box = gr.Textbox(
-                label="Debate Proposition / Topic",
-                placeholder="e.g., Is social media positively impacting society?",
+                label="Debate Proposition / Topic (Universal: Econ, Tech, Geopolitics, Science, Psych, Philosophy)",
+                placeholder="e.g., Does social media cause more harm than good to human cognition?",
                 scale=4
             )
             reset_btn = gr.Button("🔄 Reset / New Debate", variant="secondary", scale=1)
@@ -867,6 +988,13 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
             )
             export_btn = gr.DownloadButton(
                 "📥 Download Transcript (.pdf)",
+                variant="secondary",
+                size="lg",
+                visible=False,
+                scale=1
+            )
+            trace_export_btn = gr.DownloadButton(
+                "🔍 Download Trace Log (.json)",
                 variant="secondary",
                 size="lg",
                 visible=False,
@@ -889,7 +1017,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
     next_turn_btn.click(
         fn=run_debate_step,
         inputs=[topic_box, loops_slider, cooldown_slider, groq_model_dropdown, gemini_model_dropdown, debate_state],
-        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn]
+        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn, trace_export_btn]
     )
 
     export_btn.click(
@@ -898,10 +1026,16 @@ with gr.Blocks(css=CUSTOM_CSS, title="Multi-Agent AI Debate Engine") as demo:
         outputs=[export_btn]
     )
 
+    trace_export_btn.click(
+        fn=export_trace_json_file,
+        inputs=[debate_state],
+        outputs=[trace_export_btn]
+    )
+
     reset_btn.click(
         fn=reset_debate,
         inputs=[],
-        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn]
+        outputs=[debate_state, feed_html, next_turn_btn, topic_box, loops_slider, export_btn, trace_export_btn]
     )
 
 if __name__ == "__main__":
