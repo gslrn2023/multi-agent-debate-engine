@@ -1,20 +1,16 @@
 # ==============================================================================
 # MULTI-AGENT AI DEBATE ENGINE
-# Version: v2.7.0 | Date: 2026-10-31
-# Changelog (v2.7.0):
-#   - Added Agentic Domain Query Planner (generate_agentic_search_queries) so
-#     agents dynamically infer domain metrics (e.g., divorce/NCRB/NFHS for
-#     sociology, GVA/deflators for econ, clinical endpoints for medicine)
-#     instead of relying on static templates.
-#   - Purged all abstract meta-buzzwords ("structural bottlenecks", "productivity",
-#     "investment", "unintended consequences") from Tavily keyword queries.
-#   - Directed Exa neural highlights to target statistical findings, empirical
-#     results, and conclusions rather than introductory abstracts.
-#   - Added "linkedin.com" to EXCLUDED_SEARCH_DOMAINS and neutralized snippet
-#     headers to "" to stop inline "Deep Study:" label leakage.
-#   - Added portable ZeroGPU fallback for seamless GitHub / multi-SDK deployment.
-#   - Shifted agent output target to a concise, data-dense Fact-Sheet format
-#     (130-175 words per turn, 20-30 words per bullet).
+# Version: v2.8.1 | Date: 2026-11-01
+# Changelog (v2.8.1):
+#   - Scrubbed all topic-specific examples and domain-biased stopwords to ensure
+#     100% universal, domain-agnostic execution across any user proposition.
+#   - Implemented 3-line plain-text Agentic Query Planner (DOMAIN / TAVILY / EXA)
+#     with thinking_budget=0 on Gemini fallback and epistemic Round 1/2/3 rotation.
+#   - Restored "- **[{title} | {url}]:**" snippet headers for accurate citations.
+#   - Expanded Tavily & Exa candidate pools to 7 results with a non-empty
+#     fallback pass to prevent empty search arrays in later rounds.
+#   - Upgraded clean_agent_output to strip leaked section headers and enforce
+#     blank lines around bullet lists for proper PDF HTML list rendering.
 # ==============================================================================
 
 import os
@@ -68,7 +64,7 @@ def zerogpu_healthcheck():
 # ==========================================
 # VERSION & CONFIGURABLE ENGINE VARIABLES
 # ==========================================
-APP_VERSION = "v2.7.0"
+APP_VERSION = "v2.8.1"
 TRACE = True                # // Set True to enable JSON trace logging & UI download button; Set False for production //
 DEFAULT_MAX_LOOPS = 3       # // Default & Max number of debate loops/rounds //
 DEFAULT_WAIT_TIME_SEC = 30  # // Wait time in seconds between EACH AI agent execution //
@@ -77,7 +73,7 @@ DAILY_LIMIT_FILE = "daily_limit.json"
 DAILY_LIMIT_LOCK = threading.Lock()
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
-# Universal list of low-signal social/video/profile domains excluded from web search
+# Universal list of low-signal social/video/forum domains excluded from web search
 EXCLUDED_SEARCH_DOMAINS = [
     "instagram.com",
     "threads.net",
@@ -90,17 +86,18 @@ EXCLUDED_SEARCH_DOMAINS = [
     "x.com",
     "twitter.com",
     "linkedin.com",
-    "in.linkedin.com"
+    "in.linkedin.com",
+    "wallstreetoasis.com",
+    "quora.com"
 ]
 
-# Abstract meta-words banned from Tavily lexical search queries to prevent off-topic noise
+# Purely epistemic debate meta-words stripped from Tavily lexical queries to prevent off-topic noise
 BANNED_TAVILY_META_WORDS = {
     "empirical", "criticisms", "structural", "limitations", "bottlenecks",
     "discrepancy", "trade-offs", "tradeoffs", "unintended", "consequences",
-    "frameworks", "framework", "resilience", "benchmarks", "sustained",
-    "validating", "proven", "benefits", "counter-evidence", "counterarguments",
-    "positive", "indicators", "overarching", "comparative", "implications",
-    "vulnerabilities", "systemic", "alternative", "alternatives", "real-world"
+    "frameworks", "framework", "benchmarks", "validating", "proven",
+    "counter-evidence", "counterarguments", "overarching", "comparative",
+    "implications", "vulnerabilities", "systemic", "real-world"
 }
 
 # ==========================================
@@ -159,7 +156,7 @@ CUSTOM_CSS = """
 }
 .card-body p, .card-body li {
     color: inherit !important;
-    line-height: 1.55;
+    line-height: 1.58;
 }
 """
 
@@ -246,29 +243,27 @@ def _normalize_title(title: str) -> str:
     words = alnum.split()
     return " ".join(words[:7]) if len(words) >= 3 else alnum
 
-def _compress_topic_anchor(topic: str, max_words: int = 10) -> str:
-    """Condenses a long conversational proposition into its core subject anchor."""
-    filler = {
+def _compress_topic_anchor(topic: str, max_words: int = 8) -> str:
+    """Condenses a long conversational proposition into its core subject nouns using strictly domain-neutral stopwords."""
+    neutral_stopwords = {
         "the", "and", "for", "that", "this", "with", "from", "are", "was", "were", "will",
         "have", "has", "had", "not", "but", "can", "more", "than", "into", "their", "its",
-        "indicator", "growing", "developing", "many", "fronts", "improving", "standards",
-        "previous", "year", "quarter", "good", "bad", "initiative", "transformative", "leap",
-        "whether", "should", "would", "could", "really", "actually", "overall", "society",
-        "is", "in", "of", "by", "an", "as", "per", "prevailing"
+        "whether", "should", "would", "could", "really", "actually", "overall", "is", "in",
+        "of", "by", "an", "as", "per", "to", "on", "at", "be", "or", "if", "it", "many"
     }
     tokens = re.findall(r'\b[A-Za-z0-9\.\-%]+\b', topic)
     seen_tok = set()
     core = []
     for t in tokens:
         lt = t.lower()
-        if lt not in filler and lt not in seen_tok:
+        if lt not in neutral_stopwords and lt not in seen_tok:
             seen_tok.add(lt)
             core.append(t)
     selected = core[:max_words] if core else tokens[:max_words]
     return " ".join(selected)
 
 def _clean_snippet_boilerplate(text: str) -> str:
-    """Strips PDF embargo notices, repeated titles, and navigation boilerplate from search snippets."""
+    """Strips embargo notices, repeated titles, and navigation boilerplate from search snippets."""
     if not text:
         return ""
     cleaned = re.sub(r'\s+', ' ', text).strip()
@@ -282,18 +277,19 @@ def _clean_snippet_boilerplate(text: str) -> str:
     return cleaned
 
 def _sanitize_tavily_query(raw_query: str, fallback_anchor: str) -> str:
-    """Strips banned abstract meta-words and punctuation from Tavily query so only domain nouns/metrics remain."""
+    """Strips banned abstract debate meta-words from Tavily query so only concrete domain nouns and metrics remain."""
     if not raw_query:
         return fallback_anchor
     tokens = re.findall(r'\b[A-Za-z0-9\.\-%]+\b', raw_query)
     filtered = [t for t in tokens if t.lower() not in BANNED_TAVILY_META_WORDS]
-    result = " ".join(filtered[:12]).strip()
-    return result if len(result) >= 10 else fallback_anchor
+    result = " ".join(filtered[:11]).strip()
+    return result if len(result) >= 8 else fallback_anchor
 
 def extract_opponent_focus_terms(last_turn_text: str) -> str:
     """
-    Extracts concrete subject nouns and dataset/institutional acronyms (like IHDS, NFHS, NCRB, PIIE)
-    while ignoring media publisher names (like NDTV, BBC, CNBC, Reuters).
+    Universal Per-Bullet Concept Extractor:
+    Extracts concrete subject nouns and official dataset/institutional acronyms from each bullet body
+    while filtering out generic debate verbs and media outlet names.
     """
     if not last_turn_text:
         return ""
@@ -305,7 +301,7 @@ def extract_opponent_focus_terms(last_turn_text: str) -> str:
     if not bullet_lines:
         bullet_lines = [last_turn_text]
 
-    media_and_stop_words = {
+    generic_and_media_stopwords = {
         "the", "and", "for", "that", "this", "with", "from", "while", "are", "was", "were",
         "have", "has", "had", "not", "but", "what", "all", "can", "more", "than", "into",
         "over", "under", "their", "they", "its", "also", "such", "only", "which", "when",
@@ -313,18 +309,18 @@ def extract_opponent_focus_terms(last_turn_text: str) -> str:
         "argument", "claim", "claims", "evidence", "study", "studies", "report", "reports",
         "shows", "prove", "proves", "point", "points", "reality", "impact", "impacts",
         "direct", "rebuttal", "front", "independent", "first", "second", "third", "every",
-        "methodological", "opacity", "calculation", "divergence", "vital", "economic",
-        "metrics", "broad", "based", "sectoral", "surge", "momentum", "highlights",
-        "notes", "suggests", "indicates", "indicating", "challenges", "undermined",
-        "despite", "significant", "underlying", "headline", "figure", "figures", "print",
-        "published", "cannot", "verify", "across", "sectors", "strongest", "quarterly",
-        "cites", "dismisses", "confirms", "leans", "asserts", "reveals", "according",
-        "ministry", "official", "statistics", "programme", "implementation", "former",
-        "secretary", "bureaucrat", "interview", "commentary", "breakingviews", "reuters",
+        "methodological", "opacity", "calculation", "divergence", "vital", "metrics",
+        "broad", "based", "sectoral", "surge", "momentum", "highlights", "notes",
+        "suggests", "indicates", "indicating", "challenges", "undermined", "despite",
+        "significant", "underlying", "headline", "figure", "figures", "print", "published",
+        "cannot", "verify", "across", "sectors", "strongest", "quarterly", "cites",
+        "dismisses", "confirms", "leans", "asserts", "reveals", "according", "official",
+        "statistics", "former", "interview", "commentary", "breakingviews", "reuters",
         "ndtv", "cnbc", "livemint", "mint", "express", "hindu", "times", "bloomberg",
-        "bbc", "opindia", "whalesbook", "sahi", "journal", "analysis", "research",
-        "merely", "citing", "higher", "lower", "emphasizes", "assertion", "recent",
-        "integrated", "office", "principal", "indexed"
+        "bbc", "journal", "analysis", "research", "merely", "citing", "higher", "lower",
+        "emphasizes", "assertion", "recent", "integrated", "indexed", "multilevel",
+        "analyses", "multivariate", "finds", "nationally", "representative", "provided",
+        "investigates", "almost", "strongly", "where", "regions", "live", "web"
     }
 
     seen = set()
@@ -332,14 +328,13 @@ def extract_opponent_focus_terms(last_turn_text: str) -> str:
 
     for b_line in bullet_lines:
         body_only = re.sub(r'^\s*[\*\-\•]\s*(\*\*[^\*]{1,75}\*\*[:\-–—]?)?', ' ', b_line)
-        # Allow valid dataset/institution acronyms (3-6 uppercase chars) + substantive words (5-18 chars)
         acronyms = re.findall(r'\b[A-Z]{3,6}\b', body_only)
         words = re.findall(r'\b[A-Za-z][a-z\-]{4,17}\b', body_only)
 
         picked_this_bullet = 0
         for token in (acronyms + words):
             lw = token.lower().strip("-")
-            if lw not in media_and_stop_words and lw not in seen and len(lw) >= 3:
+            if lw not in generic_and_media_stopwords and lw not in seen and len(lw) >= 3:
                 seen.add(lw)
                 extracted.append(token if token.isupper() else lw)
                 picked_this_bullet += 1
@@ -350,6 +345,32 @@ def extract_opponent_focus_terms(last_turn_text: str) -> str:
 
     return " ".join(extracted)
 
+def _parse_three_line_plan(raw_text: str, short_anchor: str) -> dict | None:
+    """Parses the 3-line DOMAIN / TAVILY / EXA plain-text output from the query planner."""
+    if not raw_text:
+        return None
+    dom_match = re.search(r'DOMAIN\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+    tav_match = re.search(r'TAVILY\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+    exa_match = re.search(r'EXA\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+
+    if not tav_match or not exa_match:
+        return None
+
+    inferred_domain = dom_match.group(1).strip().strip('"\'*') if dom_match else "Specialized Domain"
+    raw_tav = tav_match.group(1).strip().strip('"\'*')
+    raw_exa = exa_match.group(1).strip().strip('"\'*')
+
+    clean_tav = _sanitize_tavily_query(raw_tav, short_anchor)
+    clean_exa = raw_exa[:350].strip()
+
+    if len(clean_tav) >= 8 and len(clean_exa) >= 15:
+        return {
+            "inferred_domain": inferred_domain[:50],
+            "tavily_query": clean_tav,
+            "exa_query": clean_exa
+        }
+    return None
+
 def generate_agentic_search_queries(
     topic: str,
     agent_role: str,
@@ -357,66 +378,65 @@ def generate_agentic_search_queries(
     last_opponent_text: str = ""
 ) -> dict:
     """
-    Universal Agentic Query Planner:
-    Uses a fast LLM micro-call to infer the topic's domain and formulate concrete, stance-specific
-    search queries for Tavily (6-10 domain nouns/metrics) and Exa (natural-language scholarly query).
+    Universal Agentic Query Planner (v2.8.1):
+    Dynamically infers the subject domain of any user proposition and generates domain-native
+    search queries using a resilient 3-line plain-text protocol (DOMAIN / TAVILY / EXA).
     """
-    short_anchor = _compress_topic_anchor(topic, max_words=10)
+    short_anchor = _compress_topic_anchor(topic, max_words=8)
     opp_terms = extract_opponent_focus_terms(last_opponent_text)
 
     stance_desc = (
-        f"PROPONENT (Supporter) proving that '{topic}' is true/beneficial"
+        f"SUPPORTER proving that '{topic}' holds true and delivers net positive outcomes"
         if agent_role == "Supporter"
-        else f"OPPONENT (Contender) proving that '{topic}' is flawed/false/harmful"
+        else f"CONTENDER proving that '{topic}' is flawed, overstated, or counterproductive"
     )
 
+    # Purely epistemic, domain-agnostic round rotation to ensure fresh evidence dimensions each round
+    if current_round == 1:
+        round_angle = (
+            "ROUND 1 FOCUS (Foundational Baselines & Primary Datasets): Search for headline quantitative rates, "
+            "flagship national/global datasets, primary empirical benchmarks, and core institutional studies."
+        )
+    elif current_round == 2:
+        round_angle = (
+            "ROUND 2 FOCUS (Methodological Audits, Confounding Variables & Secondary Indicators): Search for "
+            "secondary real-world indicators, sample/measurement biases, hidden trade-offs, or operational "
+            "data that directly counter the opponent's previous claims."
+        )
+    else:
+        round_angle = (
+            "ROUND 3 FOCUS (Longitudinal Outcomes & Structural Comparisons): Search for long-term longitudinal "
+            "trajectories, cross-regional or cross-demographic comparisons, systemic constraints, and enduring precedents."
+        )
+
     opp_context = (
-        f"Opponent's last turn arguments to refute:\n{last_opponent_text[:600]}\n"
+        f"Opponent's previous claims to refute:\n{last_opponent_text[:500]}\n"
         if last_opponent_text
-        else "Opening Round 1: Focus on foundational domain statistics, official datasets, and primary metrics.\n"
+        else "Opening turn of the debate.\n"
     )
 
     planner_prompt = (
-        f"You are an expert search query strategist for a debate engine.\n"
-        f"Debate Proposition: \"{topic}\"\n"
-        f"Your Assigned Stance (Round {current_round}): {stance_desc}\n"
+        f"You are an expert search query strategist for a universal, multi-domain debate engine.\n"
+        f"Proposition: \"{topic}\"\n"
+        f"Assigned Role: {stance_desc}\n"
+        f"{round_angle}\n"
         f"{opp_context}\n"
-        f"Task: Formulate two highly specific web search queries tailored to the exact subject domain "
-        f"(e.g., if marriage/sociology: search divorce rates, domestic violence, NCRB, NFHS, compatibility, family court stats; "
-        f"if economics: search GDP deflator, FDI, employment, MoSPI, IMF; if tech/science/geopolitics: search domain-native metrics).\n\n"
-        f"Return STRICTLY a valid JSON object with these 3 keys:\n"
-        f"1. \"inferred_domain\": Short 2-4 word domain name.\n"
-        f"2. \"tavily_query\": Strictly 6 to 10 concrete domain nouns, specific metric names, or official dataset acronyms. "
-        f"DO NOT include abstract words like 'empirical', 'criticisms', 'structural', 'bottlenecks', 'limitations', 'frameworks', or 'consequences'.\n"
-        f"3. \"exa_query\": A 12 to 22 word natural-language academic search query seeking peer-reviewed studies and statistical findings supporting your stance"
-        f"{' and refuting the opponent claims' if last_opponent_text else ''}.\n"
-        f"Output JSON only, no markdown fences."
+        f"Task: Identify the exact academic/professional domain of this proposition and formulate search queries "
+        f"using concrete, domain-native nouns, specific measurable indicators, and relevant dataset or institution acronyms.\n"
+        f"- NEVER use abstract debate filler words in TAVILY like 'empirical', 'criticisms', 'structural', 'limitations', 'bottlenecks', 'frameworks', or 'consequences'.\n"
+        f"- Use only concrete subject terms, specific metrics, and official data sources native to the proposition's field.\n\n"
+        f"Reply in EXACTLY 3 plain-text lines (no JSON, no markdown, no extra commentary):\n"
+        f"DOMAIN: <2 to 4 word academic or industry domain name>\n"
+        f"TAVILY: <7 to 10 concrete domain keywords, specific metric names, and dataset/institution acronyms>\n"
+        f"EXA: <14 to 22 word natural-language scholarly query seeking specific empirical findings and studies for this round's focus>"
     )
 
     groq_key = os.environ.get("GROQ_API_KEY", "").strip()
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    planner_errors = []
 
-    raw_json_str = ""
-    planner_source = "fallback_deterministic"
-
-    # Attempt 1: Fast Groq micro-call (llama-3.1-8b-instant)
-    if groq_key:
-        try:
-            client = Groq(api_key=groq_key)
-            resp = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": planner_prompt}],
-                temperature=0.2,
-                max_completion_tokens=180,
-                response_format={"type": "json_object"}
-            )
-            raw_json_str = resp.choices[0].message.content or ""
-            planner_source = "groq:llama-3.1-8b-instant"
-        except Exception:
-            raw_json_str = ""
-
-    # Attempt 2: Fallback to Gemini Flash if Groq micro-call failed
-    if not raw_json_str and gemini_key:
+    # Attempt 1: Gemini 2.5 Flash with thinking_budget=0 (fast, zero-thinking, high instruction adherence)
+    if gemini_key:
         try:
             client = genai.Client(api_key=gemini_key)
             resp = client.models.generate_content(
@@ -424,44 +444,65 @@ def generate_agentic_search_queries(
                 contents=planner_prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.2,
-                    max_output_tokens=200,
-                    response_mime_type="application/json"
+                    max_output_tokens=250,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0)
                 )
             )
-            raw_json_str = resp.text or ""
-            planner_source = "gemini:gemini-2.5-flash"
-        except Exception:
-            raw_json_str = ""
-
-    if raw_json_str:
-        try:
-            cleaned_json = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw_json_str.strip())
-            parsed = json.loads(cleaned_json)
-            inferred_domain = str(parsed.get("inferred_domain", "General Domain")).strip()
-            t_q = _sanitize_tavily_query(str(parsed.get("tavily_query", "")), short_anchor)
-            e_q = str(parsed.get("exa_query", "")).strip()[:350]
-            if len(t_q) >= 10 and len(e_q) >= 15:
+            parsed = _parse_three_line_plan(resp.text or "", short_anchor)
+            if parsed:
                 return {
-                    "inferred_domain": inferred_domain,
-                    "planner_source": planner_source,
-                    "tavily_query": t_q,
-                    "exa_query": e_q,
-                    "extracted_opponent_keywords": opp_terms
+                    **parsed,
+                    "planner_source": "gemini:gemini-2.5-flash",
+                    "extracted_opponent_keywords": opp_terms,
+                    "planner_errors": planner_errors
                 }
-        except Exception:
-            pass
+            else:
+                planner_errors.append(f"Gemini format mismatch: {(resp.text or '')[:100]}")
+        except Exception as e:
+            planner_errors.append(f"Gemini error: {str(e)[:120]}")
 
-    # Deterministic fallback if JSON parsing fails
-    fallback_tavily = _sanitize_tavily_query(f"{short_anchor} {opp_terms} statistics survey data rate", short_anchor)
-    fallback_exa = (
-        f"Peer-reviewed study and statistical data on {short_anchor} {opp_terms}"[:350]
-    )
+    # Attempt 2: Groq llama-3.3-70b-versatile / llama-3.1-8b-instant plain-text call
+    if groq_key:
+        for g_model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+            try:
+                client = Groq(api_key=groq_key)
+                resp = client.chat.completions.create(
+                    model=g_model,
+                    messages=[{"role": "user", "content": planner_prompt}],
+                    temperature=0.2,
+                    max_completion_tokens=200
+                )
+                raw_out = resp.choices[0].message.content or ""
+                parsed = _parse_three_line_plan(raw_out, short_anchor)
+                if parsed:
+                    return {
+                        **parsed,
+                        "planner_source": f"groq:{g_model}",
+                        "extracted_opponent_keywords": opp_terms,
+                        "planner_errors": planner_errors
+                    }
+                else:
+                    planner_errors.append(f"{g_model} format mismatch: {raw_out[:100]}")
+            except Exception as e:
+                planner_errors.append(f"{g_model} error: {str(e)[:120]}")
+
+    # Attempt 3: Epistemic round-varied deterministic fallback (100% domain-neutral)
+    round_suffixes = {
+        1: "statistics rate percentage survey dataset study",
+        2: "methodology bias confounding factors secondary outcomes data",
+        3: "longitudinal study long-term trends comparative analysis"
+    }
+    r_suf = round_suffixes.get(current_round, "statistics survey data")
+    fallback_tavily = _sanitize_tavily_query(f"{short_anchor} {opp_terms} {r_suf}", short_anchor)
+    fallback_exa = f"Peer-reviewed study and statistical findings on {short_anchor} {opp_terms} ({r_suf})"[:350]
+
     return {
         "inferred_domain": "Universal Fallback",
         "planner_source": "deterministic_fallback",
         "tavily_query": fallback_tavily,
         "exa_query": fallback_exa,
-        "extracted_opponent_keywords": opp_terms
+        "extracted_opponent_keywords": opp_terms,
+        "planner_errors": planner_errors
     }
 
 def fetch_combined_research(
@@ -473,7 +514,7 @@ def fetch_combined_research(
     seen_titles: list = None
 ) -> tuple[str, dict, list, list]:
     """
-    Executes Agentic Query Planning followed by deduplicated Tavily + Exa search.
+    Executes Agentic Query Planning followed by deduplicated Tavily + Exa search (with pool=7 and non-empty fallback).
     Returns: (formatted_snippets_string, trace_metadata_dict, updated_seen_urls, updated_seen_titles)
     """
     tavily_key = os.environ.get("TAVILY_API_KEY", "").strip()
@@ -489,55 +530,58 @@ def fetch_combined_research(
     plan = generate_agentic_search_queries(topic, agent_role, current_round, last_opponent_text)
     t_query = plan["tavily_query"]
     e_query = plan["exa_query"]
-    short_anchor = _compress_topic_anchor(topic, max_words=10)
+    short_anchor = _compress_topic_anchor(topic, max_words=8)
 
     snippets = []
     tavily_trace_records = []
     exa_trace_records = []
 
-    # 2. TAVILY SEARCH (Concrete domain nouns/metrics only; social/profile domains excluded)
+    # 2. TAVILY SEARCH (Pool of 7 candidates, full [Title | URL] headers)
     if tavily_key:
         try:
             tavily_client = TavilyClient(api_key=tavily_key)
             t_resp = tavily_client.search(
                 query=t_query,
                 search_depth="basic",
-                max_results=5,
+                max_results=7,
                 include_answer=(current_round == 1),
                 exclude_domains=EXCLUDED_SEARCH_DOMAINS
             )
             if current_round == 1 and t_resp.get("answer"):
                 ans_text = _clean_snippet_boilerplate(t_resp["answer"])[:360]
                 if len(ans_text) >= 80 and "do not provide direct information" not in ans_text.lower():
-                    snippets.append(f"- **:** {ans_text}")
+                    snippets.append(f"- **[Web Synthesis]:** {ans_text}")
                     tavily_trace_records.append({
                         "type": "tavily_answer",
-                        "title": "Tavily Synthesis",
+                        "title": "Web Synthesis",
                         "url": "N/A",
                         "snippet": ans_text
                     })
 
             added_tavily = 0
+            fallback_tavily_candidates = []
             for res in t_resp.get("results", []):
                 url = res.get("url", "")
                 title = res.get("title", "Verified Report").strip()
                 norm_u = _normalize_url(url)
                 norm_t = _normalize_title(title)
 
-                if norm_u in seen_url_set or (norm_t and norm_t in seen_title_set):
-                    continue
                 if any(dom in norm_u for dom in EXCLUDED_SEARCH_DOMAINS):
                     continue
 
                 raw_content = res.get("content", "")
-                content = _clean_snippet_boilerplate(raw_content)[:420]
-                if len(content) < 120:
+                content = _clean_snippet_boilerplate(raw_content)[:440]
+                if len(content) < 110:
+                    continue
+
+                if norm_u in seen_url_set or (norm_t and norm_t in seen_title_set):
+                    fallback_tavily_candidates.append((title, url, content, norm_u, norm_t))
                     continue
 
                 seen_url_set.add(norm_u)
                 if norm_t:
                     seen_title_set.add(norm_t)
-                snippets.append(f"- **:** {content}...")
+                snippets.append(f"- **[{title} | {url}]:** {content}...")
                 tavily_trace_records.append({
                     "type": "tavily_result",
                     "title": title,
@@ -547,36 +591,46 @@ def fetch_combined_research(
                 added_tavily += 1
                 if added_tavily >= 2:
                     break
+
+            # Non-empty fallback if strict deduplication filtered all candidates
+            if added_tavily == 0 and fallback_tavily_candidates:
+                title, url, content, norm_u, norm_t = fallback_tavily_candidates[0]
+                snippets.append(f"- **[{title} | {url}]:** {content}...")
+                tavily_trace_records.append({
+                    "type": "tavily_fallback_result",
+                    "title": title,
+                    "url": url,
+                    "snippet": content
+                })
         except Exception as e:
             err_str = str(e)
             gr.Warning(f"⚠️ Tavily search warning: {err_str}. Continuing with Exa/internal data.")
             tavily_trace_records.append({"error": err_str})
 
-    # 3. EXA NEURAL SEARCH (Targets statistical findings, percentages, and empirical results)
+    # 3. EXA NEURAL SEARCH (Pool of 7 candidates, full [Title | URL] headers)
     if exa_key:
         try:
             exa_client = Exa(api_key=exa_key)
             e_resp = exa_client.search_and_contents(
                 e_query,
                 type="auto",
-                num_results=5,
+                num_results=7,
                 exclude_domains=EXCLUDED_SEARCH_DOMAINS,
                 highlights={
                     "num_sentences": 3,
                     "highlights_per_url": 1,
-                    "query": f"{short_anchor} statistical findings percentages survey data results conclusion"
+                    "query": f"{t_query} statistical findings percentages empirical results conclusion"
                 },
                 text={"max_characters": 550}
             )
             added_exa = 0
+            fallback_exa_candidates = []
             for res in getattr(e_resp, "results", []):
                 url = getattr(res, "url", "")
                 title = (getattr(res, "title", None) or "Academic Study").strip()
                 norm_u = _normalize_url(url)
                 norm_t = _normalize_title(title)
 
-                if norm_u in seen_url_set or (norm_t and norm_t in seen_title_set):
-                    continue
                 if any(dom in norm_u for dom in EXCLUDED_SEARCH_DOMAINS):
                     continue
 
@@ -586,10 +640,14 @@ def fetch_combined_research(
                 if len(text_body) < 100:
                     continue
 
+                if norm_u in seen_url_set or (norm_t and norm_t in seen_title_set):
+                    fallback_exa_candidates.append((title, url, text_body, norm_u, norm_t))
+                    continue
+
                 seen_url_set.add(norm_u)
                 if norm_t:
                     seen_title_set.add(norm_t)
-                snippets.append(f"- **:** {text_body}...")
+                snippets.append(f"- **[{title} | {url}]:** {text_body}...")
                 exa_trace_records.append({
                     "type": "exa_result",
                     "title": title,
@@ -599,6 +657,17 @@ def fetch_combined_research(
                 added_exa += 1
                 if added_exa >= 2:
                     break
+
+            # Non-empty fallback if strict deduplication filtered all candidates
+            if added_exa == 0 and fallback_exa_candidates:
+                title, url, text_body, norm_u, norm_t = fallback_exa_candidates[0]
+                snippets.append(f"- **[{title} | {url}]:** {text_body}...")
+                exa_trace_records.append({
+                    "type": "exa_fallback_result",
+                    "title": title,
+                    "url": url,
+                    "snippet": text_body
+                })
         except Exception as e:
             err_str = str(e)
             gr.Warning(f"⚠️ Exa search warning: {err_str}. Continuing with Tavily/internal data.")
@@ -612,6 +681,7 @@ def fetch_combined_research(
     trace_meta = {
         "inferred_domain": plan["inferred_domain"],
         "query_planner_source": plan["planner_source"],
+        "planner_errors": plan.get("planner_errors", []),
         "compressed_topic_anchor": short_anchor,
         "extracted_opponent_keywords": plan["extracted_opponent_keywords"],
         "tavily_dispatched_query": t_query,
@@ -626,15 +696,30 @@ def fetch_combined_research(
     return combined_text, trace_meta, list(seen_url_set), list(seen_title_set)
 
 # ==========================================
-# OUTPUT SANITIZER (STRIPS LEAKED LABELS)
+# OUTPUT SANITIZER (STRIPS LEAKED LABELS & FIXES MARKDOWN LISTS)
 # ==========================================
 def clean_agent_output(text: str) -> str:
-    """Strips mechanical prefixes ('Direct Rebuttal:', 'Methodological audit -') and inline snippet tags ('Deep Study:')."""
+    """
+    1. Strips standalone section headers ('Opening Hook', 'Fact-Sheet', 'Closing Takeaway').
+    2. Strips mechanical bullet prefixes ('Direct Rebuttal:', 'Methodological audit -').
+    3. Ensures a blank line before the bullet list so markdown.markdown() renders proper HTML <ul><li> lists.
+    """
     if not text:
         return ""
 
-    cleaned_lines = []
-    outer_pattern = re.compile(
+    standalone_section_pattern = re.compile(
+        r'^\s*(?:\#+\s*|\*\*\s*)?'
+        r'(?:Opening\s+Hook|Opening\s+Paragraph|Fact[\-\s\u2011]Sheet(?:\s+Core)?|Point[\-\s\u2011]Wise\s+Core|Closing\s+Takeaway|Closing\s+Paragraph)'
+        r'(?:\s*\*\*)?\s*[:\-–—]?\s*$',
+        re.IGNORECASE
+    )
+
+    inline_section_prefix = re.compile(
+        r'^\s*(\*\*)?(?:Opening\s+Hook|Fact[\-\s\u2011]Sheet(?:\s+Core)?|Closing\s+Takeaway)(\*\*)?\s*[:\-–—]\s*',
+        re.IGNORECASE
+    )
+
+    outer_bullet_pattern = re.compile(
         r'^(\s*[\*\-\•]\s*)(\*\*)?'
         r'(?:'
         r'Direct\s+Rebuttal|Rebuttal(?:\s+to\s+[^:–\-]{1,35})?|'
@@ -646,19 +731,35 @@ def clean_agent_output(text: str) -> str:
         re.IGNORECASE
     )
 
-    inline_tag_pattern = re.compile(r'\b(?:Deep\s+Study|Publication|Source)\s*:\s*', re.IGNORECASE)
+    inline_tag_pattern = re.compile(r'\b(?:Deep\s+Study|Publication|Source|Web\s+Synthesis)\s*:\s*', re.IGNORECASE)
 
-    for line in text.splitlines():
+    cleaned_lines = []
+    for raw_line in text.splitlines():
+        if standalone_section_pattern.match(raw_line):
+            continue
+
+        line = inline_section_prefix.sub("", raw_line)
+
         def _replacer(match):
-            bullet_prefix = match.group(1)
             trailing_bold = match.group(4) or match.group(2) or ""
-            return f"{bullet_prefix}{trailing_bold}"
+            return f"* {trailing_bold}"
 
-        cleaned_line = outer_pattern.sub(_replacer, line)
-        cleaned_line = inline_tag_pattern.sub("", cleaned_line)
-        cleaned_lines.append(cleaned_line)
+        line = outer_bullet_pattern.sub(_replacer, line)
+        line = re.sub(r'^\s*[\*\-\•]\s+', '* ', line)
+        line = inline_tag_pattern.sub("", line)
+        cleaned_lines.append(line)
 
-    return "\n".join(cleaned_lines)
+    final_lines = []
+    for line in cleaned_lines:
+        is_bullet = line.startswith("* ")
+        prev_line = final_lines[-1] if final_lines else ""
+        if is_bullet and prev_line.strip() != "" and not prev_line.startswith("* "):
+            final_lines.append("")
+        if not is_bullet and line.strip() != "" and prev_line.startswith("* "):
+            final_lines.append("")
+        final_lines.append(line)
+
+    return "\n".join(final_lines).strip()
 
 # ==========================================
 # PHASE 2: EXTERNAL PROMPT LOADER & API CALLS
@@ -675,20 +776,20 @@ def load_system_prompt(agent_role: str, topic: str, current_round: int, max_roun
 
     if is_very_first_speech:
         phase_goal = (
-            "Opening Fact-Sheet (Round 1) — Deliver 4 to 5 concise, data-dense bullets (20-30 words each) "
+            "Opening Case (Round 1) — Deliver 4 to 5 hard-hitting, evidence-dense bullets (30-40 words each) "
             "establishing your core case with verified statistics, empirical findings, and named sources."
         )
     elif current_round < max_rounds:
         phase_goal = (
-            f"Rebuttal & Expansion Fact-Sheet (Round {current_round}) — Deliver 4 to 5 concise bullets (20-30 words each): "
+            f"Rebuttal & Expansion (Round {current_round}) — Deliver 4 to 5 sharp bullets (30-40 words each): "
             "use your first 2 to 3 bullets to directly dismantle the opponent's specific claims from the last turn, and "
             "your final 1 to 2 bullets to introduce new empirical evidence from this round's research."
         )
     else:
         phase_goal = (
-            f"Final Closing Fact-Sheet (Round {current_round}) — Deliver 4 to 5 concise bullets (20-30 words each): "
+            f"Final Closing Clash (Round {current_round}) — Deliver 4 to 5 decisive bullets (30-40 words each): "
             "use your first 2 to 3 bullets to refute the opponent's last turn, and your final 1 to 2 bullets "
-            "to lock in the decisive comparative evidence."
+            "to lock in the overarching comparative evidence."
         )
 
     populated = (
@@ -725,8 +826,8 @@ def call_with_rate_limit_retry(api_func, provider_name: str, max_retries: int = 
             else:
                 raise gr.Error(f"{provider_name} API Error: {str(e)}")
 
-def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str, temperature: float = 0.30) -> str:
-    """Calls Groq API with strict low temperature (0.30) to enforce source-bound fact-sheet precision."""
+def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str, temperature: float = 0.35) -> str:
+    """Calls Groq API with calibrated temperature (0.35) to enforce source-bound precision."""
     groq_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not groq_key:
         raise gr.Error("Missing GROQ_API_KEY in Space Secrets.")
@@ -739,7 +840,7 @@ def call_groq_supporter(system_prompt: str, user_prompt: str, groq_model: str, t
             "model": groq_model,
             "messages": [{"role": "user", "content": combined_prompt}],
             "temperature": temperature,
-            "max_completion_tokens": 1536,
+            "max_completion_tokens": 1800,
         }
         if "gpt-oss" in groq_model:
             kwargs["reasoning_effort"] = "low"
@@ -1087,27 +1188,27 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     )
 
     research_block = (
-        f"VERIFIED LIVE WEB RESEARCH (Round {current_round} — Domain: {trace_meta['inferred_domain']}):\n{web_facts}\n\n"
-        f"STRICT FACT-SHEET & ANTI-HALLUCINATION RULES FOR THIS TURN:\n"
-        f"1. CONCISE FACT-SHEET FORMAT (130-175 WORDS TOTAL): Keep your entire response crisp and data-dense. Opening hook: 1-2 sentences (20-30 words). Bullets: 4 to 5 bullets, each strictly 1-2 short sentences (20-30 words max per bullet). Closing: 1-2 sentences (20-25 words).\n"
-        f"2. ZERO NUMERICAL FABRICATION: Never invent percentages, sample sizes, or survey metrics that are not explicitly printed in the VERIFIED LIVE WEB RESEARCH above. If a study snippet provides qualitative conclusions or abstracts without numbers, cite its qualitative finding and source name—NEVER guess or make up a percentage.\n"
-        f"3. IGNORE OFF-TOPIC SNIPPETS: If any search snippet above is off-topic (e.g., an unrelated corporate report, visa rule, or manual), ignore it completely. Never force analogies to unrelated documents.\n"
-        f"4. CLEAN CITATIONS & HEADERS: Cite actual study/institution names in parentheses—e.g., (IHDS, 2012) or (IMF, 2026). NEVER write 'Deep Study:', 'Publication:', 'Source:', or 'Rebuttal:' in your text."
+        f"VERIFIED LIVE WEB RESEARCH (Round {current_round} — Inferred Domain: {trace_meta['inferred_domain']}):\n{web_facts}\n\n"
+        f"UNIVERSAL RULES FOR THIS TURN:\n"
+        f"1. HARD-HITTING, EVIDENCE-DENSE FORMAT (180-230 WORDS TOTAL): Deliver a sharp 2-sentence opening hook, followed by 4 to 5 bullet points (30-40 words each), and a decisive 2-sentence closing punchline. NEVER print section headers like 'Opening Hook', 'Fact-Sheet', or 'Closing Takeaway'.\n"
+        f"2. CITE EXACT SOURCE TITLES FROM RESEARCH: Each research snippet above starts with **[Title | URL]:**. Cite the actual study, dataset, journal, or institution name in parentheses—e.g., (Institution or Journal Name, Year). NEVER write '(Live Web Research)' or invent generic placeholder study names.\n"
+        f"3. ZERO NUMERICAL FABRICATION OR DIRECTIONAL INVERSION: Never invent percentages, sample sizes, or metrics not explicitly present in the research snippets. Never invert the directional finding of a source (if a snippet reports a metric that favors the opposing view, do not claim the snippet favors your view—instead, audit its methodology, baseline scope, or confounding variables).\n"
+        f"4. IGNORE OFF-TOPIC SNIPPETS: If any search snippet is unrelated to the proposition, ignore it completely."
     )
 
     if not state["history"]:
-        user_prompt = f"{research_block}\n\nDeliver your concise Round 1 opening fact-sheet on: '{current_topic}'."
+        user_prompt = f"{research_block}\n\nDeliver your Round 1 opening argument on: '{current_topic}'."
     else:
         transcript = build_tpm_safe_transcript(state["history"])
         user_prompt = (
             f"Debate transcript so far:\n\n{transcript}\n\n"
             f"{research_block}\n\n"
-            f"Deliver your concise Round {current_round} fact-sheet response as the {agent_role} "
-            f"(4-5 compact bullets: 2-3 direct rebuttals + 1-2 fresh evidence fronts, strictly 130-175 words total)."
+            f"Deliver your Round {current_round} response as the {agent_role} "
+            f"(4 to 5 bullets: 2-3 direct rebuttals + 1-2 fresh evidence fronts, 180-230 words total, with zero section headers)."
         )
 
     if agent_role == "Supporter":
-        raw_reply = call_groq_supporter(system_prompt, user_prompt, groq_model, temperature=0.30)
+        raw_reply = call_groq_supporter(system_prompt, user_prompt, groq_model, temperature=0.35)
         used_model = groq_model
     else:
         raw_reply = call_gemini_contender(system_prompt, user_prompt, gemini_model, temperature=0.35)
@@ -1143,6 +1244,7 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
             "timestamp_ist": datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S IST'),
             "inferred_domain": trace_meta["inferred_domain"],
             "query_planner_source": trace_meta["query_planner_source"],
+            "planner_errors": trace_meta.get("planner_errors", []),
             "compressed_topic_anchor": trace_meta["compressed_topic_anchor"],
             "extracted_opponent_keywords": trace_meta["extracted_opponent_keywords"],
             "tavily_dispatched_query": trace_meta["tavily_dispatched_query"],
@@ -1158,6 +1260,8 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         state.setdefault("trace_logs", []).append(turn_trace_entry)
         print(f"\n{'='*60}\n[TRACE {APP_VERSION}] Round {current_round} | {agent_role} ({used_model})")
         print(f"  -> Inferred Domain   : {trace_meta['inferred_domain']} ({trace_meta['query_planner_source']})")
+        if trace_meta.get("planner_errors"):
+            print(f"  -> Planner Warnings  : {trace_meta['planner_errors']}")
         print(f"  -> Tavily Query      : {trace_meta['tavily_dispatched_query']}")
         print(f"  -> Exa Prompt        : {trace_meta['exa_dispatched_prompt']}")
         print(f"  -> Snippet Payload   : {trace_meta['combined_research_char_length']} chars | Unique URLs: {trace_meta['total_unique_urls_seen_so_far']}\n{'='*60}")
@@ -1233,7 +1337,7 @@ with gr.Blocks(css=CUSTOM_CSS, title=f"Multi-Agent AI Debate Engine ({APP_VERSIO
     trace_badge = " • 🔍 `TRACE: ON`" if TRACE else ""
     gr.Markdown(
         f"# ⚖️ The Multi-Agent AI Debate Engine (`{APP_VERSION}`)\n"
-        f"*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`) • Agentic Domain Search (Tavily + Exa){trace_badge}*"
+        f"*🟢 Supporter (Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (Google `gemini-2.5-flash`) • Universal Agentic Search (Tavily + Exa){trace_badge}*"
     )
 
     # ------------------------------------------
@@ -1289,8 +1393,8 @@ with gr.Blocks(css=CUSTOM_CSS, title=f"Multi-Agent AI Debate Engine ({APP_VERSIO
 
         with gr.Row():
             topic_box = gr.Textbox(
-                label="Debate Proposition / Topic (Universal: Econ, Tech, Geopolitics, Sociology, Science, Psych, Philosophy)",
-                placeholder="e.g., Does social media cause more harm than good to human cognition?",
+                label="Debate Proposition / Topic (Universal: Any Academic, Technical, Policy, Scientific, or Philosophical Domain)",
+                placeholder="Enter any proposition to debate...",
                 scale=4
             )
             reset_btn = gr.Button("🔄 Reset / New Debate", variant="secondary", scale=1)
