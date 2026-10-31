@@ -36,10 +36,10 @@ from xhtml2pdf import pisa
 # VERSION & CONFIGURABLE ENGINE VARIABLES
 # ==========================================
 APP_VERSION = "v2.6.0"
-TRACE = False                # // Set True to enable JSON trace logging & UI download button; Set False for production //
+TRACE = True                # // Set True to enable JSON trace logging & UI download button; Set False for production //
 DEFAULT_MAX_LOOPS = 3       # // Default & Max number of debate loops/rounds //
 DEFAULT_WAIT_TIME_SEC = 30  # // Wait time in seconds between EACH AI agent execution //
-MAX_DAILY_DEBATES = 3       # // Global max debates per day across all users //
+MAX_DAILY_DEBATES = 5       # // Global max debates per day across all users //
 DAILY_LIMIT_FILE = "daily_limit.json"
 DAILY_LIMIT_LOCK = threading.Lock()
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
