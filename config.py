@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: config.py
-# Version: v2.9.0 | Date: 2026-11-01
+# Version: v2.9.1 | Date: 2026-11-01
 # Purpose: Global configuration, constants, CSS, ZeroGPU handler, daily quota
 #          limiter, and password gate verification.
 # ==============================================================================
@@ -43,7 +43,7 @@ def zerogpu_healthcheck():
 # ==========================================
 # VERSION & CONFIGURABLE ENGINE VARIABLES
 # ==========================================
-APP_VERSION = "v2.9.0"
+APP_VERSION = "v2.9.1"
 TRACE = True                # // Set True to enable JSON trace logging & UI download button; Set False for production //
 DEFAULT_MAX_LOOPS = 3       # // Default & Max number of debate loops/rounds //
 DEFAULT_WAIT_TIME_SEC = 30  # // Wait time in seconds between EACH AI agent execution //
@@ -56,7 +56,7 @@ IST_TZ = timezone(timedelta(hours=5, minutes=30))
 SUPPORTER_PROMPT_FILE = "supporter_prompt.txt"
 CONTENDER_PROMPT_FILE = "contender_prompt.txt"
 
-# Universal list of low-signal social/video/forum domains excluded from web search
+# Universal list of low-signal social/video/forum/listicle domains excluded from web search
 EXCLUDED_SEARCH_DOMAINS = [
     "instagram.com",
     "threads.net",
@@ -71,7 +71,11 @@ EXCLUDED_SEARCH_DOMAINS = [
     "linkedin.com",
     "in.linkedin.com",
     "wallstreetoasis.com",
-    "quora.com"
+    "quora.com",
+    "medium.com",
+    "gitnux.org",
+    "zipdo.co",
+    "scribd.com"
 ]
 
 # Epistemic debate meta-words stripped from Tavily lexical queries to prevent off-topic noise
