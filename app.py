@@ -37,7 +37,7 @@ from exporters import (
 )
 
 def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, gemini_model, state):
-    """Executes a single step-by-step turn with strict provider isolation, deduplicated search, PDF export, and TRACE logging."""
+    """Executes a single step-by-step turn with strict provider isolation, cross-round query memory, PDF export, and TRACE logging."""
     if not topic_input or not topic_input.strip():
         raise gr.Error("Please enter a debate topic or proposition first.")
 
@@ -79,8 +79,13 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
     wait_sec = int(cooldown_input)
     enforce_wait_time(state.get("last_agent_ts", 0.0), wait_sec, f"{agent_role} (Round {current_round})")
 
-    # Extract opponent's last speech text
+    # Extract opponent's last speech text and this agent's past queries to prevent query repetition
     last_opponent_text = state["history"][-1]["content"] if state["history"] else ""
+    past_agent_queries = [
+        entry.get("tavily_dispatched_query", "")
+        for entry in state.get("trace_logs", [])
+        if entry.get("role") == agent_role and entry.get("tavily_dispatched_query")
+    ]
 
     # Fetch deduplicated facts & figures via Strictly Isolated Agentic Query Planner + Tavily + Exa
     web_facts, trace_meta, updated_seen_urls, updated_seen_titles = fetch_combined_research(
@@ -90,7 +95,8 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         active_model=active_model,
         last_opponent_text=last_opponent_text,
         seen_urls=state.get("seen_urls", []),
-        seen_titles=state.get("seen_titles", [])
+        seen_titles=state.get("seen_titles", []),
+        past_agent_queries=past_agent_queries
     )
     state["seen_urls"] = updated_seen_urls
     state["seen_titles"] = updated_seen_titles
@@ -107,9 +113,9 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         f"VERIFIED LIVE WEB RESEARCH (Round {current_round} — Inferred Domain: {trace_meta['inferred_domain']}):\n{web_facts}\n\n"
         f"UNIVERSAL RULES FOR THIS TURN:\n"
         f"1. HARD-HITTING, EVIDENCE-DENSE FORMAT (180-230 WORDS TOTAL): Deliver a sharp 2-sentence opening hook, followed by 4 to 5 bullet points (30-40 words each), and a decisive 2-sentence closing punchline. NEVER print section headers like 'Opening Hook', 'Fact-Sheet', or 'Closing Takeaway'.\n"
-        f"2. CLEAN, AUTHORITATIVE CITATIONS: Cite the actual institution, survey, or journal name in parentheses—e.g., (Institution or Journal Name, Year). NEVER copy-paste truncated titles ending in '...' and NEVER cite unrelated conference/booklet container titles.\n"
-        f"3. MAINTAIN YOUR STANCE CONSISTENTLY: Never contradict arguments you made in your own earlier rounds, and never hedge with middle-of-the-road 'both sides have merit' conclusions.\n"
-        f"4. ZERO NUMERICAL FABRICATION OR DIRECTIONAL INVERSION: Only use numbers explicitly present in the research snippets, and never invert a source's directional finding."
+        f"2. STRICT CHARACTER-FOR-CHARACTER NUMERICAL FIDELITY: Every percentage, ratio, or sample size you write MUST appear explicitly in the VERIFIED LIVE WEB RESEARCH text above. If the research text above does not contain a specific percentage for your argument, make a rigorous qualitative or methodological argument without inventing numbers.\n"
+        f"3. NO CLONED BULLETS OR SELF-CONTRADICTION: Do NOT repeat the same bullet headers or arguments from your own earlier speeches in the transcript, and never contradict your own Round 1/2 stance.\n"
+        f"4. NATURAL DEBATE CITATIONS (NO META-TALK): Cite actual study titles, authors, or institutions in parentheses—never cite raw URLs like '(doi.org)' or '(sites.bu.edu)', and NEVER refer to the prompt mechanics by saying 'in the provided research'."
     )
 
     if not state["history"]:
@@ -120,13 +126,13 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
             f"Debate transcript so far:\n\n{transcript}\n\n"
             f"{research_block}\n\n"
             f"Deliver your Round {current_round} response as the {agent_role} "
-            f"(4 to 5 bullets: 2-3 direct rebuttals to the opponent's last speech + 1-2 fresh evidence fronts, 180-230 words total, with zero section headers)."
+            f"(4 to 5 bullets: 2-3 direct rebuttals to the opponent's last speech + 1-2 brand-new evidence fronts not used in your earlier turns, 180-230 words total)."
         )
 
     if agent_role == "Supporter":
-        raw_reply = call_groq_supporter(system_prompt, user_prompt, groq_model, temperature=0.35)
+        raw_reply = call_groq_supporter(system_prompt, user_prompt, groq_model, temperature=0.20)
     else:
-        raw_reply = call_gemini_contender(system_prompt, user_prompt, gemini_model, temperature=0.35)
+        raw_reply = call_gemini_contender(system_prompt, user_prompt, gemini_model, temperature=0.30)
 
     reply_text = clean_agent_output(raw_reply)
 
@@ -161,6 +167,7 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
             "planner_errors": trace_meta.get("planner_errors", []),
             "compressed_topic_anchor": trace_meta["compressed_topic_anchor"],
             "extracted_opponent_keywords": trace_meta["extracted_opponent_keywords"],
+            "past_queries_avoided": trace_meta.get("past_queries_avoided", []),
             "tavily_dispatched_query": trace_meta["tavily_dispatched_query"],
             "exa_dispatched_prompt": trace_meta["exa_dispatched_prompt"],
             "tavily_results": trace_meta["tavily_results"],
