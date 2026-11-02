@@ -56,15 +56,40 @@ def _normalize_title(title: str) -> str:
     return " ".join(words[:7]) if len(words) >= 3 else alnum
 
 def _clean_display_title(title: str, url: str) -> str:
-    """Cleans trailing ellipses ('...') and generic filenames from snippet titles so citations look authoritative."""
+    """
+    Cleans trailing ellipses ('...'), site suffixes, and corrupted PDF metadata (e.g. 'TX_1~ABS:AT')
+    without appending raw URL domains to valid titles so agents cite proper study/institution names.
+    """
     domain_label = _extract_clean_domain_label(url)
     if not title:
-        return domain_label
-    cleaned = re.sub(r'\s*\.\.\.+\s*$', '', title.strip())
-    cleaned = re.sub(r'\s+[\|\-–—]\s+(?:Get\s+Access|PDF|Full\s+Text|ScienceDirect|ResearchGate).*$', '', cleaned, flags=re.IGNORECASE)
-    if len(cleaned) < 6 or cleaned.lower() in {"academic study", "verified report", "chapter 1 introduction", "research analysis"}:
         return f"Study via {domain_label}"
-    return f"{cleaned} ({domain_label})"
+
+    cleaned = re.sub(r'\s*\.\.\.+\s*$', '', title.strip())
+    cleaned = re.sub(r'^\s*\(PDF\)\s*', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r'\s+[\|\-–—]\s+(?:Get\s+Access|PDF|Full\s+Text|ScienceDirect|ResearchGate|PubMed|PMC).*$',
+        '',
+        cleaned,
+        flags=re.IGNORECASE
+    )
+
+    # Detect corrupted PDF header strings (like 'TX_1~ABS:AT/TX_2~ABS:AT') or generic placeholders
+    is_corrupted = bool(re.search(r'[~_]{1,}|ABS:|TX_\d', cleaned))
+    generic_titles = {
+        "academic study", "verified report", "chapter 1 introduction",
+        "research analysis", "abstract", "introduction", "home"
+    }
+
+    if is_corrupted or len(cleaned) < 8 or cleaned.lower() in generic_titles:
+        # Try to rescue filename from URL query if present (e.g. filename="Marital+dissolution+in+India")
+        fn_match = re.search(r'filename%3D%22([^%]+)', url)
+        if fn_match:
+            rescued = fn_match.group(1).replace('+', ' ').strip()
+            if len(rescued) >= 8:
+                return rescued
+        return f"Research Study ({domain_label})"
+
+    return cleaned
 
 def _compress_topic_anchor(topic: str, max_words: int = 8) -> str:
     """Condenses a long conversational proposition into its core subject nouns using domain-neutral stopwords."""
@@ -208,16 +233,18 @@ def generate_agentic_search_queries(
     agent_role: str,
     current_round: int,
     active_model: str,
-    last_opponent_text: str = ""
+    last_opponent_text: str = "",
+    past_agent_queries: list = None
 ) -> dict:
     """
-    Strict Single-Provider Agentic Query Planner (v2.9.0):
+    Strict Single-Provider Agentic Query Planner (v2.9.1):
       - If agent_role == "Supporter": Calls ONLY Groq (active_model).
       - If agent_role == "Contender": Calls ONLY Gemini (active_model).
-    Formulates stance-polarized, domain-native search queries across Rounds 1, 2, and 3.
+    Includes Cross-Round Query Memory (past_agent_queries) so Round 2 & 3 never repeat Round 1 queries.
     """
     short_anchor = _compress_topic_anchor(topic, max_words=8)
     opp_terms = extract_opponent_focus_terms(last_opponent_text, topic)
+    past_queries_list = past_agent_queries or []
 
     if agent_role == "Supporter":
         stance_directive = (
@@ -237,13 +264,23 @@ def generate_agentic_search_queries(
         )
     elif current_round == 2:
         round_angle = (
-            "ROUND 2 FOCUS (Direct Rebuttal, Confounding Variables & Secondary Risks): Search for specific empirical counter-indicators, "
-            "unmeasured trade-offs, selection/reporting biases, or welfare/operational metrics that dismantle the opponent's previous turn."
+            "ROUND 2 FOCUS (Secondary Indicators, Confounding Factors & Welfare/Operational Metrics): Pivot away from Round 1 headline rates! "
+            "Search for secondary indicators (e.g., conflict drivers, socioeconomic/selection biases, financial/operational buffers, or mental/physical well-being) "
+            "that directly dismantle the opponent's previous turn."
         )
     else:
         round_angle = (
-            "ROUND 3 FOCUS (Longitudinal Trajectories & Structural Reality): Search for multi-year longitudinal studies, "
-            "macro-structural constraints, demographic/regional breakdowns, and decisive comparative evidence."
+            "ROUND 3 FOCUS (Structural, Regional & Legal/Institutional Reality): Pivot to a brand-new macro dimension! "
+            "Search for urban vs. rural/regional disparities, legal/regulatory trends, generational cohort shifts, or systemic pressures."
+        )
+
+    past_memory_block = ""
+    if past_queries_list:
+        joined_past = " | ".join(past_queries_list)
+        past_memory_block = (
+            f"QUERIES YOU ALREADY RAN IN EARLIER ROUNDS: [{joined_past}]\n"
+            f"CRITICAL DIVERSITY RULE: Do NOT repeat the exact same dataset names or metric keywords from your earlier queries above. "
+            f"You MUST search a fresh dimension of the topic so new studies are retrieved.\n"
         )
 
     opp_context = (
@@ -255,13 +292,14 @@ def generate_agentic_search_queries(
     planner_prompt = (
         f"{stance_directive}\n"
         f"{round_angle}\n"
+        f"{past_memory_block}"
         f"{opp_context}\n"
         f"Task: Formulate search queries using concrete, domain-native nouns, specific measurable indicators, and official dataset or institution acronyms.\n"
         f"- NEVER use abstract debate filler words in TAVILY like 'empirical', 'criticisms', 'structural', 'limitations', 'bottlenecks', 'frameworks', or 'consequences'.\n"
-        f"- Tailor both queries strictly to find ammunition for YOUR stance.\n\n"
+        f"- Tailor both queries strictly to find fresh ammunition for YOUR stance.\n\n"
         f"Reply in EXACTLY 3 plain-text lines (no JSON, no markdown, no extra text):\n"
         f"DOMAIN: <2 to 4 word academic or industry domain name>\n"
-        f"TAVILY: <7 to 10 concrete domain keywords, specific metric names, and dataset/institution acronyms>\n"
+        f"TAVILY: <7 to 10 concrete domain keywords, specific metric names, and dataset/institution acronyms distinct from earlier rounds>\n"
         f"EXA: <14 to 22 word natural-language scholarly query seeking specific empirical findings and studies backing your stance>"
     )
 
@@ -279,7 +317,7 @@ def generate_agentic_search_queries(
                     kwargs = {
                         "model": active_model,
                         "messages": [{"role": "user", "content": planner_prompt}],
-                        "temperature": 0.2,
+                        "temperature": 0.25,
                         "max_completion_tokens": 600 if "gpt-oss" in active_model else 220,
                     }
                     if "gpt-oss" in active_model:
@@ -317,7 +355,7 @@ def generate_agentic_search_queries(
                 def _gemini_plan():
                     client = genai.Client(api_key=gemini_key)
                     cfg_kwargs = {
-                        "temperature": 0.2,
+                        "temperature": 0.25,
                         "max_output_tokens": 300 if "flash" in active_model else 1024,
                     }
                     if "flash" in active_model:
@@ -383,11 +421,12 @@ def fetch_combined_research(
     active_model: str,
     last_opponent_text: str = "",
     seen_urls: list = None,
-    seen_titles: list = None
+    seen_titles: list = None,
+    past_agent_queries: list = None
 ) -> tuple[str, dict, list, list]:
     """
-    Executes isolated Agentic Query Planning followed by deduplicated Tavily + Exa search.
-    Adds a 3-second pacing buffer after query planning to prevent burst rate-limiting on the speech call.
+    Executes isolated Agentic Query Planning (with cross-round query memory) followed by
+    deduplicated Tavily + Exa search.
     """
     tavily_key = os.environ.get("TAVILY_API_KEY", "").strip()
     exa_key = os.environ.get("EXA_API_KEY", "").strip()
@@ -404,7 +443,8 @@ def fetch_combined_research(
         agent_role=agent_role,
         current_round=current_round,
         active_model=active_model,
-        last_opponent_text=last_opponent_text
+        last_opponent_text=last_opponent_text,
+        past_agent_queries=past_agent_queries
     )
     t_query = plan["tavily_query"]
     e_query = plan["exa_query"]
@@ -417,7 +457,7 @@ def fetch_combined_research(
     tavily_trace_records = []
     exa_trace_records = []
 
-    # 2. TAVILY SEARCH (Pool of 7 candidates, cleaned [Title (Domain) | URL] headers)
+    # 2. TAVILY SEARCH (Pool of 7 candidates, clean [Title | URL] headers)
     if tavily_key:
         try:
             tavily_client = TavilyClient(api_key=tavily_key)
@@ -429,7 +469,7 @@ def fetch_combined_research(
                 exclude_domains=EXCLUDED_SEARCH_DOMAINS
             )
             if current_round == 1 and t_resp.get("answer"):
-                ans_text = _clean_snippet_boilerplate(t_resp["answer"])[:360]
+                ans_text = _clean_snippet_boilerplate(t_resp["answer"])[:380]
                 if len(ans_text) >= 80 and "do not provide direct information" not in ans_text.lower():
                     snippets.append(f"- **[Multi-Source Synthesis]:** {ans_text}")
                     tavily_trace_records.append({
@@ -452,7 +492,7 @@ def fetch_combined_research(
                     continue
 
                 raw_content = res.get("content", "")
-                content = _clean_snippet_boilerplate(raw_content)[:440]
+                content = _clean_snippet_boilerplate(raw_content)[:480]
                 if len(content) < 110:
                     continue
 
@@ -488,7 +528,7 @@ def fetch_combined_research(
             gr.Warning(f"⚠️ Tavily search warning: {err_str}. Continuing with Exa/internal data.")
             tavily_trace_records.append({"error": err_str})
 
-    # 3. EXA NEURAL SEARCH (Pool of 7 candidates, cleaned [Title (Domain) | URL] headers)
+    # 3. EXA NEURAL SEARCH (Pool of 7 candidates, 4-sentence highlights to prevent mid-sentence truncation)
     if exa_key:
         try:
             exa_client = Exa(api_key=exa_key)
@@ -498,11 +538,11 @@ def fetch_combined_research(
                 num_results=7,
                 exclude_domains=EXCLUDED_SEARCH_DOMAINS,
                 highlights={
-                    "num_sentences": 3,
+                    "num_sentences": 4,
                     "highlights_per_url": 1,
                     "query": f"{t_query} statistical findings percentages empirical results conclusion"
                 },
-                text={"max_characters": 550}
+                text={"max_characters": 650}
             )
             added_exa = 0
             fallback_exa_candidates = []
@@ -518,7 +558,7 @@ def fetch_combined_research(
 
                 highlights_list = getattr(res, "highlights", None) or []
                 raw_text = " ".join(highlights_list) if highlights_list else (getattr(res, "text", "") or "")
-                text_body = _clean_snippet_boilerplate(raw_text)[:460]
+                text_body = _clean_snippet_boilerplate(raw_text)[:540]
                 if len(text_body) < 100:
                     continue
 
@@ -565,6 +605,7 @@ def fetch_combined_research(
         "planner_errors": plan.get("planner_errors", []),
         "compressed_topic_anchor": short_anchor,
         "extracted_opponent_keywords": plan["extracted_opponent_keywords"],
+        "past_queries_avoided": past_agent_queries or [],
         "tavily_dispatched_query": t_query,
         "exa_dispatched_prompt": e_query,
         "tavily_results": tavily_trace_records,
