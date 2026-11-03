@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: llm_agents.py
-# Version: v2.9.0 | Date: 2026-11-01
+# Version: v2.9.2 | Date: 2026-11-03
 # Purpose: Prompt loading, rate-limit backoff, isolated Groq (Supporter) and
 #          Gemini (Contender) API execution, role-tagged transcript builder,
 #          and output markdown sanitization.
