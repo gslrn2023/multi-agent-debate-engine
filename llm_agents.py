@@ -33,19 +33,23 @@ def load_system_prompt(agent_role: str, topic: str, current_round: int, max_roun
     if is_very_first_speech:
         phase_goal = (
             "Opening Case (Round 1) — Deliver 4 to 5 hard-hitting, evidence-dense bullets (30-40 words each) "
-            "establishing your core case with verified statistics, empirical findings, and named sources."
+            "establishing your core case with verified statistics, empirical findings, and named sources, "
+            "followed by a sharp 2-sentence round takeaway."
         )
     elif current_round < max_rounds:
         phase_goal = (
             f"Rebuttal & Expansion (Round {current_round}) — Deliver 4 to 5 sharp bullets (30-40 words each): "
             "use your first 2 to 3 bullets to directly dismantle the opponent's specific claims from the last turn, and "
-            "your final 1 to 2 bullets to introduce new empirical evidence from this round's research."
+            "your final 1 to 2 bullets to introduce new empirical evidence from this round's research, "
+            "followed by a sharp 2-sentence round takeaway."
         )
     else:
         phase_goal = (
-            f"Final Closing Clash (Round {current_round}) — Deliver 4 to 5 decisive bullets (30-40 words each): "
-            "use your first 2 to 3 bullets to refute the opponent's last turn, and your final 1 to 2 bullets "
-            "to lock in the overarching comparative evidence."
+            f"Final Closing Clash & Cumulative Debate Conclusion (Round {current_round} of {max_rounds}) — "
+            "Deliver 4 to 5 decisive bullets (30-40 words each) refuting the opponent's last turn and locking in final evidence. "
+            "CRITICAL FINAL-ROUND REQUIREMENT: Your final Closing Paragraph (2 to 3 sentences, 40-55 words) MUST synthesize "
+            "your strongest verified facts across ALL rounds (Round 1, Round 2, and Round 3) into a punchy, conclusive "
+            "overarching verdict that substantiates your stance on the proposition as a whole."
         )
 
     populated = (
@@ -68,16 +72,21 @@ def enforce_wait_time(last_call_ts: float, wait_sec: int, next_agent_label: str)
             time.sleep(remaining)
 
 def call_with_rate_limit_retry(api_func, provider_name: str, max_retries: int = 3, base_wait: int = 15, raise_ui_error: bool = True) -> str:
-    """Executes an API call and automatically backs off on 429 / TPM / Quota errors."""
+    """Executes an API call and automatically backs off on 429 / 503 / TPM / Quota / Overload errors."""
     for attempt in range(max_retries):
         try:
             return api_func()
         except Exception as e:
             err_msg = str(e).lower()
-            is_rate_limit = any(k in err_msg for k in ["429", "rate_limit", "rate limit", "quota", "resource_exhausted", "tpm"])
+            is_rate_limit = any(
+                k in err_msg for k in [
+                    "429", "rate_limit", "rate limit", "quota",
+                    "resource_exhausted", "tpm", "503", "unavailable", "overloaded"
+                ]
+            )
             if is_rate_limit and attempt < max_retries - 1:
                 wait_seconds = base_wait * (attempt + 1)
-                gr.Warning(f"⚠️ {provider_name} rate limit reached. Auto-waiting {wait_seconds}s before retry ({attempt + 1}/{max_retries - 1})...")
+                gr.Warning(f"⚠️ {provider_name} busy or rate-limited. Auto-waiting {wait_seconds}s before retry ({attempt + 1}/{max_retries - 1})...")
                 time.sleep(wait_seconds)
             else:
                 if raise_ui_error:
@@ -138,30 +147,44 @@ def call_gemini_contender(system_prompt: str, user_prompt: str, gemini_model: st
 
 def build_tpm_safe_transcript(history: list, current_agent_role: str) -> str:
     """
-    Formats the debate history with explicit ownership tags ('YOUR PREVIOUS SPEECH' vs.
-    'OPPONENT'S SPEECH TO REFUTE') so agents never accidentally refute their own prior points.
+    Token-Optimal In-Memory Transcript Builder (v2.9.3):
+    1. Extracts a compact list of the current agent's own prior bullet points across all earlier rounds
+       so the agent avoids repeating bullets AND can synthesize all rounds in its Final Round conclusion.
+    2. Includes the opponent's immediately preceding speech verbatim for direct point-by-point rebuttal.
     """
-    if len(history) <= 6:
-        selected = history
-    else:
-        selected = (
-            history[:2]
-            + [{"role": "System", "round": "...", "content": "*[Earlier middle rounds omitted to preserve token budget]*"}]
-            + history[-4:]
-        )
+    if not history:
+        return ""
+
+    own_prior_bullets = []
+    for m in history:
+        if m.get("role") == current_agent_role:
+            r_num = m.get("round", "?")
+            bullets = [
+                line.strip() for line in m.get("content", "").splitlines()
+                if line.strip().startswith("* ")
+            ]
+            if bullets:
+                own_prior_bullets.append(f"Round {r_num} Core Points:\n" + "\n".join(bullets))
+            else:
+                own_prior_bullets.append(f"Round {r_num} Summary:\n" + m.get("content", "")[:350])
 
     blocks = []
-    for m in selected:
-        if m["role"] == "System":
-            blocks.append(m["content"])
-        elif m["role"] == current_agent_role:
-            blocks.append(
-                f"[Round {m['round']} — YOUR PREVIOUS SPEECH ({m['role']}) — Maintain consistency; do NOT repeat or contradict these points]:\n{m['content']}"
-            )
-        else:
-            blocks.append(
-                f"[Round {m['round']} — OPPONENT'S SPEECH TO REFUTE ({m['role']}) — Target and dismantle these claims]:\n{m['content']}"
-            )
+    if own_prior_bullets:
+        blocks.append(
+            f"[YOUR ESTABLISHED ARGUMENTS FROM EARLIER ROUNDS ({current_agent_role}) — "
+            f"Do NOT repeat these as new bullets in this turn; however, if this is the Final Round, "
+            f"you MUST weave the strongest verified facts from these earlier rounds alongside your current round's points "
+            f"into your final 2-3 sentence Overall Debate Conclusion]:\n"
+            + "\n\n".join(own_prior_bullets)
+        )
+
+    last_opp = history[-1]
+    if last_opp.get("role") != current_agent_role:
+        blocks.append(
+            f"[Round {last_opp.get('round')} — OPPONENT'S LATEST SPEECH TO REFUTE ({last_opp.get('role')}) — "
+            f"Target and dismantle these specific claims in your first 2 to 3 bullets]:\n{last_opp.get('content', '')}"
+        )
+
     return "\n\n".join(blocks)
 
 def clean_agent_output(text: str) -> str:
