@@ -108,7 +108,7 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         max_rounds=max_loops_val,
         is_very_first_speech=is_very_first_speech
     )
-research_block = (
+    research_block = (
         f"VERIFIED LIVE WEB RESEARCH (Round {current_round} — Inferred Domain: {trace_meta['inferred_domain']}):\n{web_facts}\n\n"
         f"UNIVERSAL RULES FOR THIS TURN:\n"
         f"1. HARD-HITTING, EVIDENCE-DENSE FORMAT (180-230 WORDS TOTAL): Deliver a sharp 2-sentence opening hook, followed by 4 to 5 bullet points (30-40 words each), and a decisive 2-sentence closing punchline. NEVER print section headers like 'Opening Hook', 'Fact-Sheet', or 'Closing Takeaway'.\n"
