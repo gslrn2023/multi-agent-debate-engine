@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: search_engine.py
-# Version: v2.9.2 | Date: 2026-11-03
+# Version: v2.9.3 | Date: 2026-11-03
 # Purpose: Strict single-API per-agent Query Planner (Supporter -> Groq ONLY,
 #          Contender -> Gemini ONLY), stance-polarized query formulation,
 #          and deduplicated Tavily + Exa retrieval.
@@ -57,8 +57,8 @@ def _normalize_title(title: str) -> str:
 
 def _clean_display_title(title: str, url: str) -> str:
     """
-    Cleans trailing ellipses ('...'), site suffixes, and corrupted PDF metadata (e.g. 'TX_1~ABS:AT')
-    without appending raw URL domains to valid titles so agents cite proper study/institution names.
+    Cleans trailing ellipses ('...'), site suffixes, and generic/corrupted PDF metadata
+    (e.g. 'Combined PDF', 'TX_1~ABS:AT'), rescuing human-readable filenames from PDF URLs when needed.
     """
     domain_label = _extract_clean_domain_label(url)
     if not title:
@@ -73,20 +73,30 @@ def _clean_display_title(title: str, url: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # Detect corrupted PDF header strings (like 'TX_1~ABS:AT/TX_2~ABS:AT') or generic placeholders
     is_corrupted = bool(re.search(r'[~_]{1,}|ABS:|TX_\d', cleaned))
     generic_titles = {
         "academic study", "verified report", "chapter 1 introduction",
-        "research analysis", "abstract", "introduction", "home"
+        "research analysis", "abstract", "introduction", "home",
+        "combined pdf", "full text pdf", "untitled", "document"
     }
 
     if is_corrupted or len(cleaned) < 8 or cleaned.lower() in generic_titles:
-        # Try to rescue filename from URL query if present (e.g. filename="Marital+dissolution+in+India")
+        # 1. Try rescuing filename from query parameter
         fn_match = re.search(r'filename%3D%22([^%]+)', url)
         if fn_match:
             rescued = fn_match.group(1).replace('+', ' ').strip()
             if len(rescued) >= 8:
                 return rescued
+        # 2. Try rescuing filename from direct .pdf URL path
+        try:
+            path_base = os.path.basename(urlparse(url.strip()).path)
+            if path_base.lower().endswith(".pdf"):
+                stem = re.sub(r'\.pdf$', '', path_base, flags=re.IGNORECASE)
+                stem = re.sub(r'[_\-]+', ' ', stem).strip()
+                if len(stem) >= 10 and not stem.isdigit():
+                    return f"{stem} ({domain_label})"
+        except Exception:
+            pass
         return f"Research Study ({domain_label})"
 
     return cleaned
@@ -237,11 +247,11 @@ def generate_agentic_search_queries(
     past_agent_queries: list = None
 ) -> dict:
     """
-    Strict Single-Provider Agentic Query Planner (v2.9.2):
+    Strict Single-Provider Agentic Query Planner (v2.9.3):
       - If agent_role == "Supporter": Calls ONLY Groq (active_model).
       - If agent_role == "Contender": Calls ONLY Gemini (active_model).
-    Enforces Core Subject/Jurisdiction Retention across rounds while rotating analytical
-    sub-topic dimensions and targeting unchallenged opponent sub-claims.
+    Enforces Core Subject/Jurisdiction Retention, multi-prong rotation, and affirmative
+    verification keywords for the Supporter to prevent retrieving hostile articles.
     """
     short_anchor = _compress_topic_anchor(topic, max_words=8)
     opp_terms = extract_opponent_focus_terms(last_opponent_text, topic)
@@ -250,12 +260,14 @@ def generate_agentic_search_queries(
     if agent_role == "Supporter":
         stance_directive = (
             f"You are Agent A (THE SUPPORTER). Your goal is to PROVE that \"{topic}\" holds true across all its stated sub-claims. "
-            f"Search specifically for datasets, empirical rates, and studies that validate your proposition and refute the opponent's critiques."
+            f"Search specifically for datasets, empirical rates, and institutional studies that validate your proposition.\n"
+            f"CRITICAL SUPPORTER QUERY RULE: If the proposition claims the absence of negative flaws, do NOT copy those negative flaw nouns into your TAVILY or EXA queries (as negative keywords pull critical articles). "
+            f"Instead, translate them into affirmative verification metrics, compliance rates, audit mechanisms, and positive performance indicators."
         )
     else:
         stance_directive = (
             f"You are Agent B (THE CONTENDER). Your goal is to REFUTE \"{topic}\" by dismantling every specific sub-claim in the proposition. "
-            f"Search specifically for counter-statistics, technical/operational failure rates, hidden costs, and empirical flaws in the Supporter's claims."
+            f"Search specifically for counter-statistics, technical/operational failure rates, hidden costs, regulatory loopholes, and empirical flaws in the Supporter's claims."
         )
 
     if current_round == 1:
@@ -266,13 +278,13 @@ def generate_agentic_search_queries(
     elif current_round == 2:
         round_angle = (
             "ROUND 2 FOCUS (Unchallenged Prongs, Technical/Operational Trade-offs & Confounding Factors): Scan the opponent's Round 1 speech "
-            "and target the specific technical, efficiency, cost, or welfare sub-claims that have not yet been audited. Search for direct "
+            "and target the specific technical, efficiency, cost, or governance sub-claims that have not yet been audited. Search for direct "
             "counter-indicators, measurement biases, and operational bottlenecks."
         )
     else:
         round_angle = (
             "ROUND 3 FOCUS (Macro-Structural, Regional/Distributional & Long-Term Viability): Pivot to a fresh structural dimension! "
-            "Search for supply-chain/infrastructure constraints, urban-rural or demographic disparities, regulatory hurdles, and long-term sustainability data."
+            "Search for supply-chain/infrastructure constraints, demographic/regional disparities, regulatory enforcement gaps, and long-term sustainability data."
         )
 
     past_memory_block = ""
