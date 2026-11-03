@@ -43,7 +43,7 @@ def zerogpu_healthcheck():
 # ==========================================
 # VERSION & CONFIGURABLE ENGINE VARIABLES
 # ==========================================
-APP_VERSION = "v2.9.1"
+APP_VERSION = "v2.9.2"
 TRACE = True                # // Set True to enable JSON trace logging & UI download button; Set False for production //
 DEFAULT_MAX_LOOPS = 3       # // Default & Max number of debate loops/rounds //
 DEFAULT_WAIT_TIME_SEC = 30  # // Wait time in seconds between EACH AI agent execution //
