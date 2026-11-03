@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: exporters.py
-# Version: v2.9.2 | Date: 2026-11-03
+# Version: v2.9.4 | Date: 2026-11-03
 # Purpose: HTML feed rendering, Unicode-to-Latin1 PDF sanitizer, paginated PDF
 #          transcript generator, and structured JSON trace exporter.
 # ==============================================================================
