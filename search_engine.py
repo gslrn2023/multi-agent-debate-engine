@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: search_engine.py
-# Version: v2.9.3 | Date: 2026-11-03
+# Version: v2.9.4 | Date: 2026-11-03
 # Purpose: Strict single-API per-agent Query Planner (Supporter -> Groq ONLY,
 #          Contender -> Gemini ONLY), stance-polarized query formulation,
 #          and deduplicated Tavily + Exa retrieval.
