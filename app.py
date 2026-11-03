@@ -109,13 +109,13 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         is_very_first_speech=is_very_first_speech
     )
 
-    research_block = (
+research_block = (
         f"VERIFIED LIVE WEB RESEARCH (Round {current_round} — Inferred Domain: {trace_meta['inferred_domain']}):\n{web_facts}\n\n"
         f"UNIVERSAL RULES FOR THIS TURN:\n"
         f"1. HARD-HITTING, EVIDENCE-DENSE FORMAT (180-230 WORDS TOTAL): Deliver a sharp 2-sentence opening hook, followed by 4 to 5 bullet points (30-40 words each), and a decisive 2-sentence closing punchline. NEVER print section headers like 'Opening Hook', 'Fact-Sheet', or 'Closing Takeaway'.\n"
-        f"2. STRICT CHARACTER-FOR-CHARACTER NUMERICAL FIDELITY: Every percentage, ratio, or sample size you write MUST appear explicitly in the VERIFIED LIVE WEB RESEARCH text above. If the research text above does not contain a specific percentage for your argument, make a rigorous qualitative or methodological argument without inventing numbers.\n"
-        f"3. NO CLONED BULLETS OR SELF-CONTRADICTION: Do NOT repeat the same bullet headers or arguments from your own earlier speeches in the transcript, and never contradict your own Round 1/2 stance.\n"
-        f"4. NATURAL DEBATE CITATIONS (NO META-TALK): Cite actual study titles, authors, or institutions in parentheses—never cite raw URLs like '(doi.org)' or '(sites.bu.edu)', and NEVER refer to the prompt mechanics by saying 'in the provided research'."
+        f"2. STRICT NUMERICAL FIDELITY & QUALITATIVE PARITY: Only write a number, percentage, or ratio if that exact figure is explicitly printed in the VERIFIED LIVE WEB RESEARCH above. When a snippet provides a qualitative, technical, or methodological finding without numbers, deploy that qualitative mechanism directly—NEVER invent or extrapolate percentages (such as fake '%', 'ha', or 'MMT' figures) to make a bullet sound quantitative.\n"
+        f"3. MANDATORY CITATION ON EVERY BULLET: Every single bullet point (all 4 to 5 bullets) MUST end with a clean parenthetical citation naming the study, author, survey, or institution from the snippet header—e.g., (Author or Institution Name, Year). Never leave trailing bullets uncited, and never cite raw URLs.\n"
+        f"4. MULTI-PRONG CLASH & NON-REPETITION: Directly audit the opponent's specific sub-claims from their last speech without repeating your own bullet headers or figures from earlier rounds."
     )
 
     if not state["history"]:
