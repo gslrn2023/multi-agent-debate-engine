@@ -108,25 +108,45 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         max_rounds=max_loops_val,
         is_very_first_speech=is_very_first_speech
     )
+
+    is_final_round = (current_round == max_loops_val)
+    if is_final_round:
+        closing_rule_text = (
+            f"a conclusive 2 to 3 sentence Overall Debate Conclusion (40-55 words) that synthesizes your strongest "
+            f"verified facts from ALL rounds (Round 1 through Round {current_round}) to substantiate your overarching stance on the topic"
+        )
+    else:
+        closing_rule_text = "a decisive 2-sentence round takeaway (25-35 words)"
+
     research_block = (
         f"VERIFIED LIVE WEB RESEARCH (Round {current_round} — Inferred Domain: {trace_meta['inferred_domain']}):\n{web_facts}\n\n"
         f"UNIVERSAL RULES FOR THIS TURN:\n"
-        f"1. HARD-HITTING, EVIDENCE-DENSE FORMAT (180-230 WORDS TOTAL): Deliver a sharp 2-sentence opening hook, followed by 4 to 5 bullet points (30-40 words each), and a decisive 2-sentence closing punchline. NEVER print section headers like 'Opening Hook', 'Fact-Sheet', or 'Closing Takeaway'.\n"
-        f"2. STRICT NUMERICAL FIDELITY & QUALITATIVE PARITY: Only write a number, percentage, or ratio if that exact figure is explicitly printed in the VERIFIED LIVE WEB RESEARCH above. When a snippet provides a qualitative, technical, or methodological finding without numbers, deploy that qualitative mechanism directly—NEVER invent or extrapolate percentages (such as fake '%', 'ha', or 'MMT' figures) to make a bullet sound quantitative.\n"
-        f"3. MANDATORY CITATION ON EVERY BULLET: Every single bullet point (all 4 to 5 bullets) MUST end with a clean parenthetical citation naming the study, author, survey, or institution from the snippet header—e.g., (Author or Institution Name, Year). Never leave trailing bullets uncited, and never cite raw URLs.\n"
-        f"4. MULTI-PRONG CLASH & NON-REPETITION: Directly audit the opponent's specific sub-claims from their last speech without repeating your own bullet headers or figures from earlier rounds."
+        f"1. HARD-HITTING, EVIDENCE-DENSE FORMAT: Deliver a sharp 2-sentence opening hook, followed by 4 to 5 bullet points (30-40 words each), and end with {closing_rule_text}. NEVER print section headers like 'Opening Hook', 'Fact-Sheet', 'Summary', or 'Closing Takeaway'.\n"
+        f"2. STRICT NUMERICAL FIDELITY & QUALITATIVE PARITY: Only write a number, percentage, or ratio if that exact figure is explicitly printed in the VERIFIED LIVE WEB RESEARCH above. When a snippet provides a qualitative, technical, legal, or methodological finding without numbers, deploy that qualitative mechanism directly—NEVER invent or extrapolate percentages.\n"
+        f"3. MANDATORY SMART CITATION ON EVERY BULLET: Every single bullet point (all 4 to 5 bullets) MUST end with a clean parenthetical citation naming the study, author, statute, survey, or institution—e.g., (Author or Institution Name, Year). If a snippet reports a verifiable statutory or statistical fact inside an article with an opinionated headline, cite the underlying statute, survey, or institution rather than copying an adversarial headline.\n"
+        f"4. MULTI-PRONG CLASH & BULLET NON-REPETITION: Directly audit the opponent's specific sub-claims from their last speech. Do not repeat your earlier rounds' points as new bullets, and never invert a hostile snippet's conclusion."
     )
-    
+
     if not state["history"]:
         user_prompt = f"{research_block}\n\nDeliver your Round 1 opening argument on: '{current_topic}'."
     else:
         transcript = build_tpm_safe_transcript(state["history"], current_agent_role=agent_role)
-        user_prompt = (
-            f"Debate transcript so far:\n\n{transcript}\n\n"
-            f"{research_block}\n\n"
-            f"Deliver your Round {current_round} response as the {agent_role} "
-            f"(4 to 5 bullets: 2-3 direct rebuttals to the opponent's last speech + 1-2 brand-new evidence fronts not used in your earlier turns, 180-230 words total)."
-        )
+        if is_final_round:
+            user_prompt = (
+                f"Debate history and established points:\n\n{transcript}\n\n"
+                f"{research_block}\n\n"
+                f"Deliver your Final Round (Round {current_round} of {max_loops_val}) response as the {agent_role}: "
+                f"present 4 to 5 sharp bullets (2-3 direct rebuttals to the opponent's latest speech + 1-2 fresh evidence fronts), "
+                f"and finish with a powerful 2 to 3 sentence Overall Debate Conclusion that synthesizes your core verified facts "
+                f"from Round 1, Round 2, and Round {current_round} to substantiate your overall case on '{current_topic}'."
+            )
+        else:
+            user_prompt = (
+                f"Debate history and established points:\n\n{transcript}\n\n"
+                f"{research_block}\n\n"
+                f"Deliver your Round {current_round} response as the {agent_role} "
+                f"(4 to 5 bullets: 2-3 direct rebuttals to the opponent's latest speech + 1-2 brand-new evidence fronts not used in your earlier bullets, 180-230 words total)."
+            )
 
     if agent_role == "Supporter":
         raw_reply = call_groq_supporter(system_prompt, user_prompt, groq_model, temperature=0.20)
