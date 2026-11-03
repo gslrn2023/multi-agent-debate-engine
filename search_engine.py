@@ -237,10 +237,11 @@ def generate_agentic_search_queries(
     past_agent_queries: list = None
 ) -> dict:
     """
-    Strict Single-Provider Agentic Query Planner (v2.9.1):
+    Strict Single-Provider Agentic Query Planner (v2.9.2):
       - If agent_role == "Supporter": Calls ONLY Groq (active_model).
       - If agent_role == "Contender": Calls ONLY Gemini (active_model).
-    Includes Cross-Round Query Memory (past_agent_queries) so Round 2 & 3 never repeat Round 1 queries.
+    Enforces Core Subject/Jurisdiction Retention across rounds while rotating analytical
+    sub-topic dimensions and targeting unchallenged opponent sub-claims.
     """
     short_anchor = _compress_topic_anchor(topic, max_words=8)
     opp_terms = extract_opponent_focus_terms(last_opponent_text, topic)
@@ -248,30 +249,30 @@ def generate_agentic_search_queries(
 
     if agent_role == "Supporter":
         stance_directive = (
-            f"You are Agent A (THE SUPPORTER). Your goal is to PROVE that \"{topic}\" holds true and succeeds. "
-            f"Search specifically for datasets, empirical rates, and studies that validate your proposition and expose flaws in the opposing model."
+            f"You are Agent A (THE SUPPORTER). Your goal is to PROVE that \"{topic}\" holds true across all its stated sub-claims. "
+            f"Search specifically for datasets, empirical rates, and studies that validate your proposition and refute the opponent's critiques."
         )
     else:
         stance_directive = (
-            f"You are Agent B (THE CONTENDER). Your goal is to REFUTE \"{topic}\" and prove the opposing reality is stronger. "
-            f"Search specifically for counter-statistics, failure/risk rates of the Supporter's claim, methodological biases, and empirical strengths of the opposing baseline."
+            f"You are Agent B (THE CONTENDER). Your goal is to REFUTE \"{topic}\" by dismantling every specific sub-claim in the proposition. "
+            f"Search specifically for counter-statistics, technical/operational failure rates, hidden costs, and empirical flaws in the Supporter's claims."
         )
 
     if current_round == 1:
         round_angle = (
-            "ROUND 1 FOCUS (Primary Rates & Flagship Datasets): Search for headline rates, comparative success/failure percentages, "
-            "and flagship national or institutional datasets supporting your side."
+            "ROUND 1 FOCUS (Primary Rates, Flagship Datasets & Multi-Prong Baselines): Search for headline empirical rates, "
+            "flagship institutional datasets, and primary performance metrics covering the core sub-claims of the proposition."
         )
     elif current_round == 2:
         round_angle = (
-            "ROUND 2 FOCUS (Secondary Indicators, Confounding Factors & Welfare/Operational Metrics): Pivot away from Round 1 headline rates! "
-            "Search for secondary indicators (e.g., conflict drivers, socioeconomic/selection biases, financial/operational buffers, or mental/physical well-being) "
-            "that directly dismantle the opponent's previous turn."
+            "ROUND 2 FOCUS (Unchallenged Prongs, Technical/Operational Trade-offs & Confounding Factors): Scan the opponent's Round 1 speech "
+            "and target the specific technical, efficiency, cost, or welfare sub-claims that have not yet been audited. Search for direct "
+            "counter-indicators, measurement biases, and operational bottlenecks."
         )
     else:
         round_angle = (
-            "ROUND 3 FOCUS (Structural, Regional & Legal/Institutional Reality): Pivot to a brand-new macro dimension! "
-            "Search for urban vs. rural/regional disparities, legal/regulatory trends, generational cohort shifts, or systemic pressures."
+            "ROUND 3 FOCUS (Macro-Structural, Regional/Distributional & Long-Term Viability): Pivot to a fresh structural dimension! "
+            "Search for supply-chain/infrastructure constraints, urban-rural or demographic disparities, regulatory hurdles, and long-term sustainability data."
         )
 
     past_memory_block = ""
@@ -279,12 +280,13 @@ def generate_agentic_search_queries(
         joined_past = " | ".join(past_queries_list)
         past_memory_block = (
             f"QUERIES YOU ALREADY RAN IN EARLIER ROUNDS: [{joined_past}]\n"
-            f"CRITICAL DIVERSITY RULE: Do NOT repeat the exact same dataset names or metric keywords from your earlier queries above. "
-            f"You MUST search a fresh dimension of the topic so new studies are retrieved.\n"
+            f"CRITICAL ANCHOR & DIVERSITY RULE:\n"
+            f"1. ALWAYS RETAIN THE CORE SUBJECT & JURISDICTION: You MUST keep the primary subject noun and country/region/jurisdiction from the proposition in your TAVILY and EXA queries on every round so search results never drift to unrelated countries or industries.\n"
+            f"2. ROTATE THE ANALYTICAL METRICS: Do NOT repeat the same secondary aspect or metric keywords from your earlier queries above; pivot to a new sub-claim or technical dimension of the proposition.\n"
         )
 
     opp_context = (
-        f"Opponent's previous claims to dismantle:\n{last_opponent_text[:500]}\n"
+        f"Opponent's previous claims to dismantle:\n{last_opponent_text[:550]}\n"
         if last_opponent_text
         else "Opening turn of the debate.\n"
     )
@@ -296,10 +298,10 @@ def generate_agentic_search_queries(
         f"{opp_context}\n"
         f"Task: Formulate search queries using concrete, domain-native nouns, specific measurable indicators, and official dataset or institution acronyms.\n"
         f"- NEVER use abstract debate filler words in TAVILY like 'empirical', 'criticisms', 'structural', 'limitations', 'bottlenecks', 'frameworks', or 'consequences'.\n"
-        f"- Tailor both queries strictly to find fresh ammunition for YOUR stance.\n\n"
+        f"- Always include the proposition's core subject entity and geographical/institutional scope in TAVILY.\n\n"
         f"Reply in EXACTLY 3 plain-text lines (no JSON, no markdown, no extra text):\n"
         f"DOMAIN: <2 to 4 word academic or industry domain name>\n"
-        f"TAVILY: <7 to 10 concrete domain keywords, specific metric names, and dataset/institution acronyms distinct from earlier rounds>\n"
+        f"TAVILY: <core subject + jurisdiction/scope + 5 to 8 concrete domain metric keywords and dataset/institution acronyms>\n"
         f"EXA: <14 to 22 word natural-language scholarly query seeking specific empirical findings and studies backing your stance>"
     )
 
@@ -390,15 +392,15 @@ def generate_agentic_search_queries(
     # Stance-aware deterministic fallback if the provider's planner call failed
     if agent_role == "Supporter":
         round_suffixes = {
-            1: "success rate positive outcomes national survey statistics",
-            2: "satisfaction autonomy welfare benefits study data",
-            3: "longitudinal stability long-term gains demographic trends"
+            1: "efficiency performance gains official statistics dataset",
+            2: "cost reduction net benefits lifecycle analysis data",
+            3: "long-term stability macro outcomes institutional study"
         }
     else:
         round_suffixes = {
-            1: "failure rate risks counter-statistics national survey",
-            2: "selection bias social pressure underreporting methodology",
-            3: "longitudinal challenges traditional stability support network"
+            1: "efficiency loss hidden costs trade-offs empirical study",
+            2: "methodology flaws supply bottlenecks adverse impact data",
+            3: "infrastructure burden long-term risks viability critique"
         }
 
     r_suf = round_suffixes.get(current_round, "statistics survey data")
