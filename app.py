@@ -108,7 +108,6 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         max_rounds=max_loops_val,
         is_very_first_speech=is_very_first_speech
     )
-
 research_block = (
         f"VERIFIED LIVE WEB RESEARCH (Round {current_round} — Inferred Domain: {trace_meta['inferred_domain']}):\n{web_facts}\n\n"
         f"UNIVERSAL RULES FOR THIS TURN:\n"
@@ -117,7 +116,7 @@ research_block = (
         f"3. MANDATORY CITATION ON EVERY BULLET: Every single bullet point (all 4 to 5 bullets) MUST end with a clean parenthetical citation naming the study, author, survey, or institution from the snippet header—e.g., (Author or Institution Name, Year). Never leave trailing bullets uncited, and never cite raw URLs.\n"
         f"4. MULTI-PRONG CLASH & NON-REPETITION: Directly audit the opponent's specific sub-claims from their last speech without repeating your own bullet headers or figures from earlier rounds."
     )
-
+    
     if not state["history"]:
         user_prompt = f"{research_block}\n\nDeliver your Round 1 opening argument on: '{current_topic}'."
     else:
