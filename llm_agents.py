@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: llm_agents.py
-# Version: v2.9.3 | Date: 2026-11-03
+# Version: v2.9.4 | Date: 2026-11-03
 # Purpose: Prompt loading, rate-limit backoff, isolated Groq (Supporter) and
 #          Gemini (Contender) API execution, role-tagged transcript builder,
 #          and output markdown sanitization.
@@ -21,7 +21,7 @@ from config import (
 )
 
 def load_system_prompt(agent_role: str, topic: str, current_round: int, max_rounds: int, is_very_first_speech: bool) -> str:
-    """Loads the prompt from supporter_prompt.txt or contender_prompt.txt and injects round variables."""
+    """Loads the prompt from supporter_prompt.txt or contender_prompt.txt and injects strategic round variables."""
     file_path = SUPPORTER_PROMPT_FILE if agent_role == "Supporter" else CONTENDER_PROMPT_FILE
 
     if not os.path.exists(file_path):
@@ -33,20 +33,28 @@ def load_system_prompt(agent_role: str, topic: str, current_round: int, max_roun
     if is_very_first_speech:
         phase_goal = (
             "Opening Case (Round 1) — Deliver 4 to 5 hard-hitting, evidence-dense bullets (30-40 words each) "
-            "establishing your core case with verified statistics, empirical findings, and named sources, "
+            "that establish your core case across ALL major clauses/dimensions of the proposition (do not narrow the topic to a single sub-element), "
             "followed by a sharp 2-sentence round takeaway."
         )
     elif current_round < max_rounds:
-        phase_goal = (
-            f"Rebuttal & Expansion (Round {current_round}) — Deliver 4 to 5 sharp bullets (30-40 words each): "
-            "use your first 2 to 3 bullets to directly dismantle the opponent's specific claims from the last turn, and "
-            "your final 1 to 2 bullets to introduce new empirical evidence from this round's research, "
-            "followed by a sharp 2-sentence round takeaway."
-        )
+        if agent_role == "Contender":
+            phase_goal = (
+                f"Rebuttal & Omission Exploitation (Round {current_round}) — Deliver 4 to 5 sharp bullets (30-40 words each): "
+                "use your first 2 bullets to directly dismantle the Supporter's specific claims from the last turn, and "
+                "use your remaining 2 to 3 bullets to open a ground-breaking new front attacking the UNADDRESSED / EVADED clauses of the proposition "
+                "that the Supporter failed to defend, followed by a sharp 2-sentence round takeaway."
+            )
+        else:
+            phase_goal = (
+                f"Rebuttal & Multi-Clause Expansion (Round {current_round}) — Deliver 4 to 5 sharp bullets (30-40 words each): "
+                "use your first 2 to 3 bullets to directly refute the Contender's critiques from the last turn, and "
+                "your final 1 to 2 bullets to defend any remaining clauses of the proposition with fresh research, "
+                "followed by a sharp 2-sentence round takeaway."
+            )
     else:
         phase_goal = (
             f"Final Closing Clash & Cumulative Debate Conclusion (Round {current_round} of {max_rounds}) — "
-            "Deliver 4 to 5 decisive bullets (30-40 words each) refuting the opponent's last turn and locking in final evidence. "
+            "Deliver 4 to 5 decisive bullets (30-40 words each): refute the opponent's last turn and lock in your strongest comparative evidence across all clauses of the proposition. "
             "CRITICAL FINAL-ROUND REQUIREMENT: Your final Closing Paragraph (2 to 3 sentences, 40-55 words) MUST synthesize "
             "your strongest verified facts across ALL rounds (Round 1, Round 2, and Round 3) into a punchy, conclusive "
             "overarching verdict that substantiates your stance on the proposition as a whole."
@@ -191,20 +199,21 @@ def clean_agent_output(text: str) -> str:
     """
     1. Strips standalone section headers ('Opening Hook', 'Fact-Sheet', 'Closing Takeaway').
     2. Strips mechanical bullet prefixes ('Direct Rebuttal:', 'Methodological audit -').
-    3. Ensures a blank line before and after the bullet list so markdown renders proper HTML <ul><li> lists.
+    3. Normalizes bold bullet headers so '* **Header ** Text' always renders cleanly as '* **Header:** Text'.
+    4. Ensures a blank line before and after the bullet list so markdown renders proper HTML <ul><li> lists.
     """
     if not text:
         return ""
 
     standalone_section_pattern = re.compile(
         r'^\s*(?:\#+\s*|\*\*\s*)?'
-        r'(?:Opening\s+Hook|Opening\s+Paragraph|Fact[\-\s\u2011]Sheet(?:\s+Core)?|Point[\-\s\u2011]Wise\s+Core|Closing\s+Takeaway|Closing\s+Paragraph)'
+        r'(?:Opening\s+Hook|Opening\s+Paragraph|Fact[\-\s\u2011]Sheet(?:\s+Core)?|Point[\-\s\u2011]Wise\s+Core|Closing\s+Takeaway|Closing\s+Paragraph|Overall\s+Debate\s+Conclusion)'
         r'(?:\s*\*\*)?\s*[:\-–—]?\s*$',
         re.IGNORECASE
     )
 
     inline_section_prefix = re.compile(
-        r'^\s*(\*\*)?(?:Opening\s+Hook|Fact[\-\s\u2011]Sheet(?:\s+Core)?|Closing\s+Takeaway)(\*\*)?\s*[:\-–—]\s*',
+        r'^\s*(\*\*)?(?:Opening\s+Hook|Fact[\-\s\u2011]Sheet(?:\s+Core)?|Closing\s+Takeaway|Overall\s+Debate\s+Conclusion)(\*\*)?\s*[:\-–—]\s*',
         re.IGNORECASE
     )
 
@@ -212,7 +221,7 @@ def clean_agent_output(text: str) -> str:
         r'^(\s*[\*\-\•]\s*)(\*\*)?'
         r'(?:'
         r'Direct\s+Rebuttal|Rebuttal(?:\s+to\s+[^:–\-]{1,35})?|'
-        r'New\s+Independent\s+Front|New\s+Front|Independent\s+Front|'
+        r'New\s+Independent\s+Front|New\s+Front|Independent\s+Front|Omission\s+Attack|'
         r'Mode\s+[ABC](?:\s*\([^\)]{1,35}\))?|'
         r'(?:Empirical|Methodological|Baseline|Structural|Causal|Scope|Premise)(?:\s*/\s*(?:Baseline|Causal|Scope|Structural))?\s+(?:Counter[\-\s]?)?Audit'
         r')'
@@ -235,6 +244,8 @@ def clean_agent_output(text: str) -> str:
 
         line = outer_bullet_pattern.sub(_replacer, line)
         line = re.sub(r'^\s*[\*\-\•]\s+', '* ', line)
+        # Fix missing or misplaced colon on bold bullet headers (e.g. '* **Instant Turnout ** Form 17C' -> '* **Instant Turnout:** Form 17C')
+        line = re.sub(r'^\*\s+\*\*([^\*\n]{2,55}?)\s*:?\s*\*\*\s*:?\s*', r'* **\1:** ', line)
         line = inline_tag_pattern.sub("", line)
         cleaned_lines.append(line)
 
