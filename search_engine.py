@@ -101,13 +101,18 @@ def _clean_display_title(title: str, url: str) -> str:
 
     return cleaned
 
-def _compress_topic_anchor(topic: str, max_words: int = 8) -> str:
-    """Condenses a long conversational proposition into its core subject nouns using domain-neutral stopwords."""
+def _compress_topic_anchor(topic: str, max_words: int = 12) -> str:
+    """
+    Condenses a long conversational proposition into its core subject and clause nouns (up to 12 words)
+    using domain-neutral stopwords so trailing clauses in compound topics are never sliced off.
+    """
     neutral_stopwords = {
         "the", "and", "for", "that", "this", "with", "from", "are", "was", "were", "will",
         "have", "has", "had", "not", "but", "can", "more", "than", "into", "their", "its",
         "whether", "should", "would", "could", "really", "actually", "overall", "is", "in",
-        "of", "by", "an", "as", "per", "to", "on", "at", "be", "or", "if", "it", "many"
+        "of", "by", "an", "as", "per", "to", "on", "at", "be", "or", "if", "it", "many",
+        "very", "there", "no", "etc", "resulting", "beneficiary", "fronts", "all", "such",
+        "through", "between", "within", "across", "during", "without", "because", "while"
     }
     tokens = re.findall(r'\b[A-Za-z0-9\.\-%]+\b', topic)
     seen_tok = set()
@@ -247,44 +252,50 @@ def generate_agentic_search_queries(
     past_agent_queries: list = None
 ) -> dict:
     """
-    Strict Single-Provider Agentic Query Planner (v2.9.3):
+    Strategic Single-Provider Agentic Query Planner (v2.9.4):
       - If agent_role == "Supporter": Calls ONLY Groq (active_model).
       - If agent_role == "Contender": Calls ONLY Gemini (active_model).
-    Enforces Core Subject/Jurisdiction Retention, multi-prong rotation, and affirmative
-    verification keywords for the Supporter to prevent retrieving hostile articles.
+    Performs Proposition-vs-Speech Gap Analysis so agents cannot narrow the debate to a single
+    cherry-picked sub-topic; forces multi-clause coverage and omission exploitation across rounds.
     """
-    short_anchor = _compress_topic_anchor(topic, max_words=8)
+    short_anchor = _compress_topic_anchor(topic, max_words=12)
     opp_terms = extract_opponent_focus_terms(last_opponent_text, topic)
     past_queries_list = past_agent_queries or []
 
     if agent_role == "Supporter":
         stance_directive = (
-            f"You are Agent A (THE SUPPORTER). Your goal is to PROVE that \"{topic}\" holds true across all its stated sub-claims. "
-            f"Search specifically for datasets, empirical rates, and institutional studies that validate your proposition.\n"
-            f"CRITICAL SUPPORTER QUERY RULE: If the proposition claims the absence of negative flaws, do NOT copy those negative flaw nouns into your TAVILY or EXA queries (as negative keywords pull critical articles). "
-            f"Instead, translate them into affirmative verification metrics, compliance rates, audit mechanisms, and positive performance indicators."
+            f"You are Agent A (THE SUPPORTER). Your goal is to PROVE the entire proposition: \"{topic}\".\n"
+            f"STRATEGIC BURDEN RULE: Decompose the proposition into all of its distinct sub-claims/clauses. "
+            f"Do NOT cherry-pick just one technical aspect; you must gather affirmative empirical rates, institutional audits, "
+            f"and regulatory compliance data that defend BOTH the technical/operational clauses AND the economic/financial/social clauses.\n"
+            f"AFFIRMATIVE FRAMING RULE: When searching for clauses that claim the absence of negative flaws, translate those concepts into "
+            f"affirmative regulatory, financial-disclosure, or enforcement keywords (e.g., 'expenditure caps', 'disclosure compliance', 'enforcement mechanisms') "
+            f"rather than ignoring those clauses or copying raw accusation words."
         )
     else:
         stance_directive = (
-            f"You are Agent B (THE CONTENDER). Your goal is to REFUTE \"{topic}\" by dismantling every specific sub-claim in the proposition. "
-            f"Search specifically for counter-statistics, technical/operational failure rates, hidden costs, regulatory loopholes, and empirical flaws in the Supporter's claims."
+            f"You are Agent B (THE CONTENDER). Your goal is to REFUTE the proposition: \"{topic}\".\n"
+            f"STRATEGIC GAP & OMISSION EXPLOITATION RULE: Compare the FULL PROPOSITION (\"{topic}\") against the Supporter's previous speech below.\n"
+            f"- If the Supporter narrowed the scope to only one clause/aspect and ignored or evaded other vulnerable clauses of the proposition, DO NOT get trapped exclusively in the Supporter's chosen sub-topic!\n"
+            f"- Design your TAVILY and EXA queries to fetch a 50/50 split: (1) direct counter-evidence to dismantle what the Supporter just argued, AND "
+            f"(2) devastating empirical data attacking the UNADDRESSED / OMITTED clauses of the proposition that the Supporter tried to avoid."
         )
 
     if current_round == 1:
         round_angle = (
-            "ROUND 1 FOCUS (Primary Rates, Flagship Datasets & Multi-Prong Baselines): Search for headline empirical rates, "
-            "flagship institutional datasets, and primary performance metrics covering the core sub-claims of the proposition."
+            "ROUND 1 FOCUS (Multi-Clause Baseline & Primary Vulnerability Audit): Identify all distinct clauses in the proposition. "
+            "Search for flagship datasets and empirical metrics that cover both the primary mechanism and the broader economic/institutional/social clauses."
         )
     elif current_round == 2:
         round_angle = (
-            "ROUND 2 FOCUS (Unchallenged Prongs, Technical/Operational Trade-offs & Confounding Factors): Scan the opponent's Round 1 speech "
-            "and target the specific technical, efficiency, cost, or governance sub-claims that have not yet been audited. Search for direct "
-            "counter-indicators, measurement biases, and operational bottlenecks."
+            "ROUND 2 FOCUS (Direct Rebuttal + Opening the Omitted Clause Front): Pivot away from Round 1's narrow angle! "
+            "Target the specific clauses of the original proposition that were left unaddressed or under-defended in Round 1 "
+            "(such as financial, economic, resource, or power-asymmetry dimensions) alongside direct methodological rebuttals."
         )
     else:
         round_angle = (
-            "ROUND 3 FOCUS (Macro-Structural, Regional/Distributional & Long-Term Viability): Pivot to a fresh structural dimension! "
-            "Search for supply-chain/infrastructure constraints, demographic/regional disparities, regulatory enforcement gaps, and long-term sustainability data."
+            "ROUND 3 FOCUS (Systemic, Legal/Enforcement & Longitudinal Reality): Pivot to macro-structural enforcement, "
+            "real-world compliance gaps, distributional disparities, and long-term empirical outcomes across the full scope of the proposition."
         )
 
     past_memory_block = ""
@@ -292,15 +303,15 @@ def generate_agentic_search_queries(
         joined_past = " | ".join(past_queries_list)
         past_memory_block = (
             f"QUERIES YOU ALREADY RAN IN EARLIER ROUNDS: [{joined_past}]\n"
-            f"CRITICAL ANCHOR & DIVERSITY RULE:\n"
-            f"1. ALWAYS RETAIN THE CORE SUBJECT & JURISDICTION: You MUST keep the primary subject noun and country/region/jurisdiction from the proposition in your TAVILY and EXA queries on every round so search results never drift to unrelated countries or industries.\n"
-            f"2. ROTATE THE ANALYTICAL METRICS: Do NOT repeat the same secondary aspect or metric keywords from your earlier queries above; pivot to a new sub-claim or technical dimension of the proposition.\n"
+            f"CRITICAL ANCHOR & ANTI-TUNNEL-VISION RULE:\n"
+            f"1. ALWAYS RETAIN THE CORE SUBJECT & JURISDICTION: Keep the primary subject noun and country/region/jurisdiction from the proposition in your TAVILY and EXA queries on every round.\n"
+            f"2. BREAK OUT OF SINGLE-SUBTOPIC TUNNEL VISION: You are STRICTLY FORBIDDEN from searching the exact same technical sub-component as your earlier queries above. You MUST shift at least half of your query keywords to a DIFFERENT clause/element of the proposition (\"{topic}\").\n"
         )
 
     opp_context = (
-        f"Opponent's previous claims to dismantle:\n{last_opponent_text[:550]}\n"
+        f"Opponent's previous speech (compare this against the full proposition \"{topic}\" to spot omitted clauses):\n{last_opponent_text[:550]}\n"
         if last_opponent_text
-        else "Opening turn of the debate.\n"
+        else "Opening turn of the debate — cover the full breadth of the proposition.\n"
     )
 
     planner_prompt = (
@@ -313,8 +324,8 @@ def generate_agentic_search_queries(
         f"- Always include the proposition's core subject entity and geographical/institutional scope in TAVILY.\n\n"
         f"Reply in EXACTLY 3 plain-text lines (no JSON, no markdown, no extra text):\n"
         f"DOMAIN: <2 to 4 word academic or industry domain name>\n"
-        f"TAVILY: <core subject + jurisdiction/scope + 5 to 8 concrete domain metric keywords and dataset/institution acronyms>\n"
-        f"EXA: <14 to 22 word natural-language scholarly query seeking specific empirical findings and studies backing your stance>"
+        f"TAVILY: <core subject + jurisdiction/scope + 5 to 8 concrete keywords covering BOTH direct rebuttal and unaddressed proposition clauses>\n"
+        f"EXA: <14 to 24 word natural-language scholarly query targeting both the opponent's claims and any unaddressed clauses of the proposition>"
     )
 
     planner_errors = []
@@ -405,14 +416,14 @@ def generate_agentic_search_queries(
     if agent_role == "Supporter":
         round_suffixes = {
             1: "efficiency performance gains official statistics dataset",
-            2: "cost reduction net benefits lifecycle analysis data",
+            2: "cost reduction compliance benefits lifecycle analysis data",
             3: "long-term stability macro outcomes institutional study"
         }
     else:
         round_suffixes = {
             1: "efficiency loss hidden costs trade-offs empirical study",
-            2: "methodology flaws supply bottlenecks adverse impact data",
-            3: "infrastructure burden long-term risks viability critique"
+            2: "methodology flaws financial loopholes adverse impact data",
+            3: "enforcement gaps systemic risks viability critique"
         }
 
     r_suf = round_suffixes.get(current_round, "statistics survey data")
