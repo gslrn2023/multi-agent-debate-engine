@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: config.py
-# Version: v2.9.5 | Date: 2026-11-03
+# Version: v2.9.6 | Date: 2026-11-03
 # Purpose: Global configuration, constants, CSS, ZeroGPU handler, daily quota
 #          limiter, and password gate verification.
 # ==============================================================================
@@ -43,7 +43,7 @@ def zerogpu_healthcheck():
 # ==========================================
 # VERSION & CONFIGURABLE ENGINE VARIABLES
 # ==========================================
-APP_VERSION = "v2.9.5"
+APP_VERSION = "v2.9.6"
 TRACE = True                # // Set True to enable JSON trace logging & UI download button; Set False for production //
 DEFAULT_MAX_LOOPS = 3       # // Default & Max number of debate loops/rounds //
 DEFAULT_WAIT_TIME_SEC = 30  # // Wait time in seconds between EACH AI agent execution //
