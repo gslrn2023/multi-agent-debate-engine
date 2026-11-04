@@ -123,8 +123,8 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         f"UNIVERSAL RULES FOR THIS TURN:\n"
         f"1. HARD-HITTING, EVIDENCE-DENSE FORMAT: Deliver a sharp 2-sentence opening hook, followed by 4 to 5 bullet points (30-40 words each), and end with {closing_rule_text}. NEVER print section headers like 'Opening Hook', 'Fact-Sheet', 'Summary', or 'Closing Takeaway'.\n"
         f"2. STRICT NUMERICAL FIDELITY & QUALITATIVE PARITY: Only write a number, percentage, or ratio if that exact figure is explicitly printed in the VERIFIED LIVE WEB RESEARCH above. When a snippet provides a qualitative, technical, legal, or methodological finding without numbers, deploy that qualitative mechanism directly—NEVER invent or extrapolate percentages.\n"
-        f"3. MANDATORY SMART CITATION ON EVERY BULLET: Every single bullet point (all 4 to 5 bullets) MUST end with a clean parenthetical citation naming the study, author, statute, survey, or institution—e.g., (Author or Institution Name, Year). If a snippet reports a verifiable statutory or statistical fact inside an article with an opinionated headline, cite the underlying statute, survey, or institution rather than copying an adversarial headline.\n"
-        f"4. MULTI-PRONG CLASH & BULLET NON-REPETITION: Directly audit the opponent's specific sub-claims from their last speech. Do not repeat your earlier rounds' points as new bullets, and never invert a hostile snippet's conclusion."
+        f"3. STRICT SOURCE OWNERSHIP & SMART CITATIONS: Every single bullet point (all 4 to 5 bullets) MUST end with a clean parenthetical citation taken STRICTLY from THIS turn's VERIFIED LIVE WEB RESEARCH block above—e.g., (Author or Institution Name, Year). NEVER copy, reuse, or hijack citations from the opponent's previous speech to cite your own rebuttals.\n"
+        f"4. ZERO HOSTILE SOURCE INVERSION & NON-REPETITION: Never invert a snippet's conclusion (if a snippet argues against your stance, do not claim it supports you—either ignore it or extract only neutral baseline facts). Do not repeat your earlier rounds' points as new bullets."
     )
 
     if not state["history"]:
@@ -182,6 +182,8 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
             "model": active_model,
             "timestamp_ist": datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S IST'),
             "inferred_domain": trace_meta["inferred_domain"],
+            "clauses_and_target": trace_meta.get("clauses_and_target", ""),
+            "identified_authorities": trace_meta.get("identified_authorities", ""),
             "query_planner_source": trace_meta["query_planner_source"],
             "planner_errors": trace_meta.get("planner_errors", []),
             "compressed_topic_anchor": trace_meta["compressed_topic_anchor"],
