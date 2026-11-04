@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: app.py (Main Entry Point)
-# Version: v2.9.4 | Date: 2026-11-03
+# Version: v2.9.6 | Date: 2026-11-04
 # Purpose: Main step-by-step debate orchestrator and Gradio UI assembly.
 # ==============================================================================
 
