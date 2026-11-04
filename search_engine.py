@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: search_engine.py
-# Version: v2.9.5 | Date: 2026-11-04
+# Version: v2.9.6 | Date: 2026-11-04
 # Purpose: Strict single-API per-agent 5-Line Cognitive Query Planner
 #          (Supporter -> Groq ONLY, Contender -> Gemini ONLY), zero-bias
 #          universal clause decomposition, OCR corruption filtering, and
@@ -272,16 +272,16 @@ def _parse_five_line_plan(
     """
     Parses the 5-line Cognitive Reasoning Plan:
     DOMAIN / CLAUSES_AND_TARGET / AUTHORITIES / TAVILY / EXA.
-    Gracefully handles both 5-line and 3-line outputs.
+    Strips optional markdown bolding or bullets before labels so DOMAIN never falls back.
     """
     if not raw_text:
         return None
 
-    dom_match = re.search(r'DOMAIN\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
-    target_match = re.search(r'CLAUSES_AND_TARGET\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
-    auth_match = re.search(r'AUTHORITIES\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
-    tav_match = re.search(r'TAVILY\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
-    exa_match = re.search(r'EXA\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+    dom_match = re.search(r'(?:^|\n)\s*[\*\-\d\.]*\s*\*?\*?DOMAIN\*?\*?\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+    target_match = re.search(r'(?:^|\n)\s*[\*\-\d\.]*\s*\*?\*?CLAUSES_AND_TARGET\*?\*?\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+    auth_match = re.search(r'(?:^|\n)\s*[\*\-\d\.]*\s*\*?\*?AUTHORITIES\*?\*?\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+    tav_match = re.search(r'(?:^|\n)\s*[\*\-\d\.]*\s*\*?\*?TAVILY\*?\*?\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+    exa_match = re.search(r'(?:^|\n)\s*[\*\-\d\.]*\s*\*?\*?EXA\*?\*?\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
 
     if not tav_match or not exa_match:
         return None
@@ -320,11 +320,11 @@ def generate_agentic_search_queries(
     past_agent_queries: list = None
 ) -> dict:
     """
-    Universal 5-Line Cognitive Query Planner (v2.9.5):
+    Universal 5-Line Cognitive Query Planner (v2.9.6):
       - If agent_role == "Supporter": Calls ONLY Groq (active_model).
       - If agent_role == "Contender": Calls ONLY Gemini (active_model).
-    Zero hardcoded examples or domain assumptions. Uses autonomous first-principles
-    reasoning (DOMAIN -> CLAUSES_AND_TARGET -> AUTHORITIES -> TAVILY -> EXA).
+    Enforces comparative-advantage query framing for Supporter so Exa/Tavily return
+    supportive institutional literature rather than adversarial failure/misuse studies.
     """
     short_anchor = _compress_topic_anchor(topic, max_words=12)
     opp_terms = extract_opponent_focus_terms(last_opponent_text, topic)
@@ -332,14 +332,14 @@ def generate_agentic_search_queries(
 
     if agent_role == "Supporter":
         stance_directive = (
-            f"You are Agent A (THE SUPPORTER). Your objective is to PROVE the proposition: \"{topic}\".\n"
+            f"You are Agent A (THE SUPPORTER). Your objective is to PROVE the proposition (or its primary/first option if framed as an 'or' question): \"{topic}\".\n"
             f"- Decompose the proposition into all of its constituent claims and dimensions.\n"
-            f"- Formulate search queries that retrieve official statistics, empirical benchmarks, and authoritative studies validating your stance.\n"
-            f"- If any part of the proposition asserts the absence of a flaw, search for the official institutional safeguards, verification metrics, and compliance datasets that govern that exact dimension within the proposition's subject and jurisdiction."
+            f"- CRITICAL SUPPORTER SEARCH RULE: Never include adversarial risk, failure, or flaw nouns (such as 'misuse', 'risks', 'failures', 'discrepancies', or 'vulnerabilities') in your TAVILY or EXA queries, because those words retrieve papers arguing against your stance.\n"
+            f"- Instead, query exclusively for comparative advantages, verifiable safeguards, governance/compliance mechanisms, efficiency benchmarks, and positive empirical outcomes."
         )
     else:
         stance_directive = (
-            f"You are Agent B (THE CONTENDER). Your objective is to REFUTE the proposition: \"{topic}\".\n"
+            f"You are Agent B (THE CONTENDER). Your objective is to REFUTE the Supporter's proposition (or champion the opposing/second option if framed as an 'or' question): \"{topic}\".\n"
             f"- Compare the full proposition against the Supporter's previous speech.\n"
             f"- Do not allow the Supporter to narrow the debate to a single cherry-picked aspect: design your search to retrieve BOTH direct counter-evidence falsifying the Supporter's claims AND empirical evidence exposing any vulnerable clauses of the proposition that the Supporter omitted or under-defended."
         )
@@ -442,7 +442,7 @@ def generate_agentic_search_queries(
                     client = genai.Client(api_key=gemini_key)
                     cfg_kwargs = {
                         "temperature": 0.25,
-                        "max_output_tokens": 450 if "flash" in active_model else 1024,
+                        "max_output_tokens": 650 if "flash" in active_model else 1024,
                     }
                     if "flash" in active_model:
                         cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
