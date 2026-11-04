@@ -1,6 +1,6 @@
 # ==============================================================================
 # MODULE: config.py
-# Version: v2.9.6 | Date: 2026-11-03
+# Version: v2.9.6 | Date: 2026-11-04
 # Purpose: Global configuration, constants, CSS, ZeroGPU handler, daily quota
 #          limiter, and password gate verification.
 # ==============================================================================
