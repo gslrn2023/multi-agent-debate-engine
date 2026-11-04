@@ -1,9 +1,10 @@
 # ==============================================================================
 # MODULE: search_engine.py
-# Version: v2.9.4 | Date: 2026-11-03
-# Purpose: Strict single-API per-agent Query Planner (Supporter -> Groq ONLY,
-#          Contender -> Gemini ONLY), stance-polarized query formulation,
-#          and deduplicated Tavily + Exa retrieval.
+# Version: v2.9.5 | Date: 2026-11-04
+# Purpose: Strict single-API per-agent 5-Line Cognitive Query Planner
+#          (Supporter -> Groq ONLY, Contender -> Gemini ONLY), zero-bias
+#          universal clause decomposition, OCR corruption filtering, and
+#          deduplicated Tavily + Exa retrieval.
 # ==============================================================================
 
 import os
@@ -126,9 +127,16 @@ def _compress_topic_anchor(topic: str, max_words: int = 12) -> str:
     return " ".join(selected)
 
 def _clean_snippet_boilerplate(text: str) -> str:
-    """Strips embargo notices, repeated titles, and navigation boilerplate from search snippets."""
+    """
+    Strips embargo notices, navigation boilerplate, and rejects OCR-corrupted PDF text
+    (where numbers/dates are garbled into symbol clusters like '#$!&' or '$# billion').
+    """
     if not text:
         return ""
+    # Reject snippets with severe PDF font-encoding corruption around numbers/words
+    if re.search(r'[#\$%\^&\*\(\)]{3,}', text) or re.search(r'\$\s*#\s*(?:billion|million|trillion|crore|lakh)', text, re.IGNORECASE):
+        return ""
+
     cleaned = re.sub(r'\s+', ' ', text).strip()
     cleaned = re.sub(
         r'This Press Release is embargoed against publication[^\.]{0,120}(?:\.|\b202[0-9]\b)',
@@ -152,15 +160,12 @@ def extract_opponent_focus_terms(last_turn_text: str, topic: str = "") -> str:
     """
     Universal Per-Bullet Concept Extractor:
     Extracts concrete subject nouns and official dataset acronyms from each bullet body,
-    filtering out citation wrapper words (e.g., 'COVID' if not in topic) and generic debate verbs.
+    filtering out citation wrapper words and generic debate verbs.
     """
     if not last_turn_text:
         return ""
 
     topic_lower = (topic or "").lower()
-
-    # Strip parenthetical citations at the end of bullets first so container titles (like '(... during COVID, 2022)')
-    # never pollute the extracted search keywords
     text_without_citations = re.sub(r'\([^\)\n]{3,80}\)', ' ', last_turn_text)
 
     bullet_lines = [
@@ -217,11 +222,64 @@ def extract_opponent_focus_terms(last_turn_text: str, topic: str = "") -> str:
 
     return " ".join(extracted)
 
-def _parse_three_line_plan(raw_text: str, short_anchor: str) -> dict | None:
-    """Parses the 3-line DOMAIN / TAVILY / EXA plain-text output from the query planner."""
+def _deduplicate_tavily_against_past(clean_tav: str, past_queries_list: list, authorities_str: str, opp_terms: str) -> str:
+    """
+    Deterministic Duplicate Guard:
+    If the LLM planner outputs a Tavily query that is identical (or >80% token overlap) to an
+    earlier round's query, injects fresh tokens from AUTHORITIES and opponent focus terms.
+    """
+    if not past_queries_list:
+        return clean_tav
+
+    curr_tokens = clean_tav.split()
+    curr_set = {w.lower() for w in curr_tokens}
+
+    is_duplicate = False
+    for past_q in past_queries_list:
+        past_set = {w.lower() for w in past_q.split()}
+        if not past_set:
+            continue
+        overlap = len(curr_set & past_set) / max(len(curr_set), 1)
+        if clean_tav.strip().lower() == past_q.strip().lower() or overlap >= 0.80:
+            is_duplicate = True
+            break
+
+    if not is_duplicate:
+        return clean_tav
+
+    # Keep the first 4 core subject/jurisdiction words and append fresh authority/opponent terms
+    anchor_head = curr_tokens[:4]
+    anchor_lower = {w.lower() for w in anchor_head}
+    extra_candidates = re.findall(r'\b[A-Za-z0-9\.\-%]+\b', f"{authorities_str} {opp_terms}")
+    fresh_tail = []
+    for tok in extra_candidates:
+        lt = tok.lower()
+        if lt not in anchor_lower and lt not in BANNED_TAVILY_META_WORDS and len(lt) >= 3:
+            anchor_lower.add(lt)
+            fresh_tail.append(tok)
+        if len(fresh_tail) >= 6:
+            break
+
+    diversified = " ".join(anchor_head + fresh_tail).strip()
+    return diversified if len(diversified) >= 10 else clean_tav
+
+def _parse_five_line_plan(
+    raw_text: str,
+    short_anchor: str,
+    past_queries_list: list = None,
+    opp_terms: str = ""
+) -> dict | None:
+    """
+    Parses the 5-line Cognitive Reasoning Plan:
+    DOMAIN / CLAUSES_AND_TARGET / AUTHORITIES / TAVILY / EXA.
+    Gracefully handles both 5-line and 3-line outputs.
+    """
     if not raw_text:
         return None
+
     dom_match = re.search(r'DOMAIN\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+    target_match = re.search(r'CLAUSES_AND_TARGET\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
+    auth_match = re.search(r'AUTHORITIES\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
     tav_match = re.search(r'TAVILY\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
     exa_match = re.search(r'EXA\s*[:\-]\s*(.+)', raw_text, re.IGNORECASE)
 
@@ -229,15 +287,25 @@ def _parse_three_line_plan(raw_text: str, short_anchor: str) -> dict | None:
         return None
 
     inferred_domain = dom_match.group(1).strip().strip('"\'*') if dom_match else "Specialized Domain"
+    clauses_target = target_match.group(1).strip().strip('"\'*') if target_match else "Multi-clause analysis"
+    authorities = auth_match.group(1).strip().strip('"\'*') if auth_match else "Official institutional datasets"
     raw_tav = tav_match.group(1).strip().strip('"\'*')
     raw_exa = exa_match.group(1).strip().strip('"\'*')
 
     clean_tav = _sanitize_tavily_query(raw_tav, short_anchor)
-    clean_exa = raw_exa[:350].strip()
+    clean_tav = _deduplicate_tavily_against_past(
+        clean_tav=clean_tav,
+        past_queries_list=past_queries_list or [],
+        authorities_str=authorities,
+        opp_terms=opp_terms
+    )
+    clean_exa = raw_exa[:360].strip()
 
     if len(clean_tav) >= 8 and len(clean_exa) >= 15:
         return {
-            "inferred_domain": inferred_domain[:50],
+            "inferred_domain": inferred_domain[:60],
+            "clauses_and_target": clauses_target[:220],
+            "identified_authorities": authorities[:140],
             "tavily_query": clean_tav,
             "exa_query": clean_exa
         }
@@ -252,11 +320,11 @@ def generate_agentic_search_queries(
     past_agent_queries: list = None
 ) -> dict:
     """
-    Strategic Single-Provider Agentic Query Planner (v2.9.4):
+    Universal 5-Line Cognitive Query Planner (v2.9.5):
       - If agent_role == "Supporter": Calls ONLY Groq (active_model).
       - If agent_role == "Contender": Calls ONLY Gemini (active_model).
-    Performs Proposition-vs-Speech Gap Analysis so agents cannot narrow the debate to a single
-    cherry-picked sub-topic; forces multi-clause coverage and omission exploitation across rounds.
+    Zero hardcoded examples or domain assumptions. Uses autonomous first-principles
+    reasoning (DOMAIN -> CLAUSES_AND_TARGET -> AUTHORITIES -> TAVILY -> EXA).
     """
     short_anchor = _compress_topic_anchor(topic, max_words=12)
     opp_terms = extract_opponent_focus_terms(last_opponent_text, topic)
@@ -264,54 +332,45 @@ def generate_agentic_search_queries(
 
     if agent_role == "Supporter":
         stance_directive = (
-            f"You are Agent A (THE SUPPORTER). Your goal is to PROVE the entire proposition: \"{topic}\".\n"
-            f"STRATEGIC BURDEN RULE: Decompose the proposition into all of its distinct sub-claims/clauses. "
-            f"Do NOT cherry-pick just one technical aspect; you must gather affirmative empirical rates, institutional audits, "
-            f"and regulatory compliance data that defend BOTH the technical/operational clauses AND the economic/financial/social clauses.\n"
-            f"AFFIRMATIVE FRAMING RULE: When searching for clauses that claim the absence of negative flaws, translate those concepts into "
-            f"affirmative regulatory, financial-disclosure, or enforcement keywords (e.g., 'expenditure caps', 'disclosure compliance', 'enforcement mechanisms') "
-            f"rather than ignoring those clauses or copying raw accusation words."
+            f"You are Agent A (THE SUPPORTER). Your objective is to PROVE the proposition: \"{topic}\".\n"
+            f"- Decompose the proposition into all of its constituent claims and dimensions.\n"
+            f"- Formulate search queries that retrieve official statistics, empirical benchmarks, and authoritative studies validating your stance.\n"
+            f"- If any part of the proposition asserts the absence of a flaw, search for the official institutional safeguards, verification metrics, and compliance datasets that govern that exact dimension within the proposition's subject and jurisdiction."
         )
     else:
         stance_directive = (
-            f"You are Agent B (THE CONTENDER). Your goal is to REFUTE the proposition: \"{topic}\".\n"
-            f"STRATEGIC GAP & OMISSION EXPLOITATION RULE: Compare the FULL PROPOSITION (\"{topic}\") against the Supporter's previous speech below.\n"
-            f"- If the Supporter narrowed the scope to only one clause/aspect and ignored or evaded other vulnerable clauses of the proposition, DO NOT get trapped exclusively in the Supporter's chosen sub-topic!\n"
-            f"- Design your TAVILY and EXA queries to fetch a 50/50 split: (1) direct counter-evidence to dismantle what the Supporter just argued, AND "
-            f"(2) devastating empirical data attacking the UNADDRESSED / OMITTED clauses of the proposition that the Supporter tried to avoid."
+            f"You are Agent B (THE CONTENDER). Your objective is to REFUTE the proposition: \"{topic}\".\n"
+            f"- Compare the full proposition against the Supporter's previous speech.\n"
+            f"- Do not allow the Supporter to narrow the debate to a single cherry-picked aspect: design your search to retrieve BOTH direct counter-evidence falsifying the Supporter's claims AND empirical evidence exposing any vulnerable clauses of the proposition that the Supporter omitted or under-defended."
         )
 
     if current_round == 1:
         round_angle = (
-            "ROUND 1 FOCUS (Multi-Clause Baseline & Primary Vulnerability Audit): Identify all distinct clauses in the proposition. "
-            "Search for flagship datasets and empirical metrics that cover both the primary mechanism and the broader economic/institutional/social clauses."
+            "ROUND 1 STRATEGY (Foundational Multi-Clause Case): Map all primary clauses of the proposition and query flagship institutional datasets, benchmark rates, and foundational studies covering the full scope of the topic."
         )
     elif current_round == 2:
         round_angle = (
-            "ROUND 2 FOCUS (Direct Rebuttal + Opening the Omitted Clause Front): Pivot away from Round 1's narrow angle! "
-            "Target the specific clauses of the original proposition that were left unaddressed or under-defended in Round 1 "
-            "(such as financial, economic, resource, or power-asymmetry dimensions) alongside direct methodological rebuttals."
+            "ROUND 2 STRATEGY (Direct Falsification & Unaddressed Clause Expansion): Target (a) the specific empirical or methodological pillar the opponent relied on in Round 1, AND (b) the distinct clauses of the original proposition that were omitted or least examined in Round 1."
         )
     else:
         round_angle = (
-            "ROUND 3 FOCUS (Systemic, Legal/Enforcement & Longitudinal Reality): Pivot to macro-structural enforcement, "
-            "real-world compliance gaps, distributional disparities, and long-term empirical outcomes across the full scope of the proposition."
+            "ROUND 3 STRATEGY (Systemic, Methodological & Longitudinal Stress-Test): Query higher-order comparative studies, real-world implementation evaluations, boundary conditions, or longitudinal data that decisively resolve the clash across all clauses of the proposition."
         )
 
     past_memory_block = ""
     if past_queries_list:
         joined_past = " | ".join(past_queries_list)
         past_memory_block = (
-            f"QUERIES YOU ALREADY RAN IN EARLIER ROUNDS: [{joined_past}]\n"
-            f"CRITICAL ANCHOR & ANTI-TUNNEL-VISION RULE:\n"
-            f"1. ALWAYS RETAIN THE CORE SUBJECT & JURISDICTION: Keep the primary subject noun and country/region/jurisdiction from the proposition in your TAVILY and EXA queries on every round.\n"
-            f"2. BREAK OUT OF SINGLE-SUBTOPIC TUNNEL VISION: You are STRICTLY FORBIDDEN from searching the exact same technical sub-component as your earlier queries above. You MUST shift at least half of your query keywords to a DIFFERENT clause/element of the proposition (\"{topic}\").\n"
+            f"QUERIES YOU ALREADY DISPATCHED IN EARLIER ROUNDS: [{joined_past}]\n"
+            f"MANDATORY QUERY EVOLUTION RULE:\n"
+            f"1. Retain the exact core subject entity and geographical/institutional jurisdiction of \"{topic}\" so results never drift to unrelated countries or industries.\n"
+            f"2. NEVER output the same TAVILY query string as an earlier round; pivot your metric and aspect keywords to target the unaddressed or newly contested clauses identified in your CLAUSES_AND_TARGET step.\n"
         )
 
     opp_context = (
-        f"Opponent's previous speech (compare this against the full proposition \"{topic}\" to spot omitted clauses):\n{last_opponent_text[:550]}\n"
+        f"Opponent's previous speech (compare against the full proposition \"{topic}\"):\n{last_opponent_text[:550]}\n"
         if last_opponent_text
-        else "Opening turn of the debate — cover the full breadth of the proposition.\n"
+        else "Opening turn of the debate — establish comprehensive coverage of the proposition.\n"
     )
 
     planner_prompt = (
@@ -319,13 +378,15 @@ def generate_agentic_search_queries(
         f"{round_angle}\n"
         f"{past_memory_block}"
         f"{opp_context}\n"
-        f"Task: Formulate search queries using concrete, domain-native nouns, specific measurable indicators, and official dataset or institution acronyms.\n"
-        f"- NEVER use abstract debate filler words in TAVILY like 'empirical', 'criticisms', 'structural', 'limitations', 'bottlenecks', 'frameworks', or 'consequences'.\n"
-        f"- Always include the proposition's core subject entity and geographical/institutional scope in TAVILY.\n\n"
-        f"Reply in EXACTLY 3 plain-text lines (no JSON, no markdown, no extra text):\n"
-        f"DOMAIN: <2 to 4 word academic or industry domain name>\n"
-        f"TAVILY: <core subject + jurisdiction/scope + 5 to 8 concrete keywords covering BOTH direct rebuttal and unaddressed proposition clauses>\n"
-        f"EXA: <14 to 24 word natural-language scholarly query targeting both the opponent's claims and any unaddressed clauses of the proposition>"
+        f"SEARCH ENGINE MECHANICS:\n"
+        f"- TAVILY is a lexical keyword engine: it requires [Core Subject + Jurisdiction/Scope] + [Specific Measurable Indicator/Mechanism] + [1-2 Official Authority/Dataset Acronyms from your AUTHORITIES line]. Never use vague meta-words like 'empirical', 'criticisms', 'structural', 'limitations', 'bottlenecks', or 'consequences'.\n"
+        f"- EXA is a neural semantic academic engine: it requires a natural-language research query asking for peer-reviewed studies, institutional audits, or statistical evaluations on your exact target within the proposition's context.\n\n"
+        f"Reply in EXACTLY 5 plain-text lines (no JSON, no markdown, no extra commentary):\n"
+        f"DOMAIN: <2 to 4 word academic, scientific, legal, or policy field>\n"
+        f"CLAUSES_AND_TARGET: <list the distinct clauses of the proposition and state which specific opponent claim + which unaddressed clause you are targeting this round>\n"
+        f"AUTHORITIES: <2 to 3 gold-standard statistical agencies, regulatory bodies, benchmark datasets, or research institutions native to this domain and jurisdiction>\n"
+        f"TAVILY: <7 to 10 concrete keywords combining Core Subject/Scope + Target Indicator + Authority Acronym, distinct from earlier rounds>\n"
+        f"EXA: <15 to 24 word natural-language scholarly query targeting empirical findings and institutional studies for your stance>"
     )
 
     planner_errors = []
@@ -343,7 +404,7 @@ def generate_agentic_search_queries(
                         "model": active_model,
                         "messages": [{"role": "user", "content": planner_prompt}],
                         "temperature": 0.25,
-                        "max_completion_tokens": 600 if "gpt-oss" in active_model else 220,
+                        "max_completion_tokens": 750 if "gpt-oss" in active_model else 320,
                     }
                     if "gpt-oss" in active_model:
                         kwargs["reasoning_effort"] = "low"
@@ -357,7 +418,7 @@ def generate_agentic_search_queries(
                     base_wait=10,
                     raise_ui_error=False
                 )
-                parsed = _parse_three_line_plan(raw_out, short_anchor)
+                parsed = _parse_five_line_plan(raw_out, short_anchor, past_queries_list, opp_terms)
                 if parsed:
                     return {
                         **parsed,
@@ -381,7 +442,7 @@ def generate_agentic_search_queries(
                     client = genai.Client(api_key=gemini_key)
                     cfg_kwargs = {
                         "temperature": 0.25,
-                        "max_output_tokens": 300 if "flash" in active_model else 1024,
+                        "max_output_tokens": 450 if "flash" in active_model else 1024,
                     }
                     if "flash" in active_model:
                         cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
@@ -399,7 +460,7 @@ def generate_agentic_search_queries(
                     base_wait=12,
                     raise_ui_error=False
                 )
-                parsed = _parse_three_line_plan(raw_out, short_anchor)
+                parsed = _parse_five_line_plan(raw_out, short_anchor, past_queries_list, opp_terms)
                 if parsed:
                     return {
                         **parsed,
@@ -415,23 +476,26 @@ def generate_agentic_search_queries(
     # Stance-aware deterministic fallback if the provider's planner call failed
     if agent_role == "Supporter":
         round_suffixes = {
-            1: "efficiency performance gains official statistics dataset",
-            2: "cost reduction compliance benefits lifecycle analysis data",
-            3: "long-term stability macro outcomes institutional study"
+            1: "official statistics benchmark dataset outcomes",
+            2: "institutional study performance metrics verification",
+            3: "longitudinal evaluation comparative results data"
         }
     else:
         round_suffixes = {
-            1: "efficiency loss hidden costs trade-offs empirical study",
-            2: "methodology flaws financial loopholes adverse impact data",
-            3: "enforcement gaps systemic risks viability critique"
+            1: "counter-statistics trade-offs empirical evaluation",
+            2: "methodology critique failure rate official data",
+            3: "longitudinal risks systemic gaps comparative study"
         }
 
     r_suf = round_suffixes.get(current_round, "statistics survey data")
     fallback_tavily = _sanitize_tavily_query(f"{short_anchor} {opp_terms} {r_suf}", short_anchor)
+    fallback_tavily = _deduplicate_tavily_against_past(fallback_tavily, past_queries_list, "", opp_terms)
     fallback_exa = f"Peer-reviewed study and statistical findings on {short_anchor} {opp_terms} ({r_suf})"[:350]
 
     return {
         "inferred_domain": "Universal Fallback",
+        "clauses_and_target": "Fallback multi-clause target",
+        "identified_authorities": "N/A",
         "planner_source": f"deterministic_fallback ({agent_role})",
         "tavily_query": fallback_tavily,
         "exa_query": fallback_exa,
@@ -450,8 +514,8 @@ def fetch_combined_research(
     past_agent_queries: list = None
 ) -> tuple[str, dict, list, list]:
     """
-    Executes isolated Agentic Query Planning (with cross-round query memory) followed by
-    deduplicated Tavily + Exa search.
+    Executes isolated 5-Line Cognitive Query Planning (with cross-round query memory and
+    duplicate prevention) followed by deduplicated Tavily + Exa search.
     """
     tavily_key = os.environ.get("TAVILY_API_KEY", "").strip()
     exa_key = os.environ.get("EXA_API_KEY", "").strip()
@@ -473,7 +537,7 @@ def fetch_combined_research(
     )
     t_query = plan["tavily_query"]
     e_query = plan["exa_query"]
-    short_anchor = _compress_topic_anchor(topic, max_words=8)
+    short_anchor = _compress_topic_anchor(topic, max_words=12)
 
     # Brief 2-second pacing buffer between query planner call and downstream speech call
     time.sleep(2.0)
@@ -626,6 +690,8 @@ def fetch_combined_research(
 
     trace_meta = {
         "inferred_domain": plan["inferred_domain"],
+        "clauses_and_target": plan.get("clauses_and_target", ""),
+        "identified_authorities": plan.get("identified_authorities", ""),
         "query_planner_source": plan["planner_source"],
         "planner_errors": plan.get("planner_errors", []),
         "compressed_topic_anchor": short_anchor,
