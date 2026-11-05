@@ -1,0 +1,25 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime Quota & State Files
+daily_limit.json
+
+# Python Bytecode & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Generated Debate Exports & Logs
+*.pdf
+*_trace_log.json
+
+# OS & IDE Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
