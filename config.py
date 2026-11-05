@@ -1,8 +1,8 @@
 # ==============================================================================
 # MODULE: config.py
-# Version: v2.9.6 | Date: 2026-11-04
-# Purpose: Global configuration, constants, CSS, ZeroGPU handler, daily quota
-#          limiter, and password gate verification.
+# Version: v2.9.6 | Date: 2026-11-05
+# Purpose: Global configuration, constants, responsive Laptop/Mobile CSS,
+#          ZeroGPU handler, daily quota limiter, and strict CHK_PSSWD gate.
 # ==============================================================================
 
 import os
@@ -44,13 +44,27 @@ def zerogpu_healthcheck():
 # VERSION & CONFIGURABLE ENGINE VARIABLES
 # ==========================================
 APP_VERSION = "v2.9.6"
-TRACE = True                # // Set True to enable JSON trace logging & UI download button; Set False for production //
-DEFAULT_MAX_LOOPS = 3       # // Default & Max number of debate loops/rounds //
-DEFAULT_WAIT_TIME_SEC = 30  # // Wait time in seconds between EACH AI agent execution //
-MAX_DAILY_DEBATES = 5       # // Global max debates per day across all users //
+TRACE = os.environ.get("TRACE", "true").strip().lower() in ("true", "1", "yes")
+DEFAULT_MAX_LOOPS = int(os.environ.get("DEFAULT_MAX_LOOPS", 3))
+DEFAULT_WAIT_TIME_SEC = int(os.environ.get("DEFAULT_WAIT_TIME_SEC", 30))
+MAX_DAILY_DEBATES = int(os.environ.get("MAX_DAILY_DEBATES", 5))
 DAILY_LIMIT_FILE = "daily_limit.json"
 DAILY_LIMIT_LOCK = threading.Lock()
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+# Configurable Model Lists (Can be customized here or overridden via .env)
+GROQ_MODEL_CHOICES = [
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant"
+]
+DEFAULT_GROQ_MODEL = os.environ.get("DEFAULT_GROQ_MODEL", GROQ_MODEL_CHOICES[0])
+
+GEMINI_MODEL_CHOICES = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro"
+]
+DEFAULT_GEMINI_MODEL = os.environ.get("DEFAULT_GEMINI_MODEL", GEMINI_MODEL_CHOICES[0])
 
 # Prompt files
 SUPPORTER_PROMPT_FILE = "supporter_prompt.txt"
@@ -88,9 +102,13 @@ BANNED_TAVILY_META_WORDS = {
 }
 
 # ==========================================
-# CUSTOM CSS FOR DISTINCT AGENT PALETTES
+# RESPONSIVE CUSTOM CSS (LAPTOP & MOBILE)
 # ==========================================
 CUSTOM_CSS = """
+.gradio-container {
+    max-width: 1200px !important;
+    margin: 0 auto !important;
+}
 .supporter-card {
     background-color: #f0fdf4;
     border-left: 6px solid #16a34a;
@@ -102,11 +120,14 @@ CUSTOM_CSS = """
 }
 .supporter-header {
     font-weight: 700;
-    font-size: 1.08rem;
+    font-size: 1.05rem;
     color: #15803d;
     margin-bottom: 10px;
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
+    align-items: center;
+    gap: 8px;
     border-bottom: 1px solid #bbf7d0;
     padding-bottom: 6px;
 }
@@ -121,11 +142,14 @@ CUSTOM_CSS = """
 }
 .contender-header {
     font-weight: 700;
-    font-size: 1.08rem;
+    font-size: 1.05rem;
     color: #b91c1c;
     margin-bottom: 10px;
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
+    align-items: center;
+    gap: 8px;
     border-bottom: 1px solid #fecaca;
     padding-bottom: 6px;
 }
@@ -134,10 +158,28 @@ CUSTOM_CSS = """
     padding: 2px 10px;
     border-radius: 12px;
     background-color: rgba(0,0,0,0.08);
+    white-space: nowrap;
 }
 .card-body p, .card-body li {
     color: inherit !important;
     line-height: 1.58;
+    word-break: break-word;
+}
+@media (max-width: 768px) {
+    .gradio-container {
+        padding: 8px !important;
+    }
+    .supporter-card, .contender-card {
+        padding: 12px 14px;
+        margin-bottom: 14px;
+    }
+    .supporter-header, .contender-header {
+        font-size: 0.95rem;
+    }
+    .card-body p, .card-body li {
+        font-size: 0.94rem;
+        line-height: 1.5;
+    }
 }
 """
 
@@ -179,13 +221,13 @@ def record_new_debate_started() -> int:
         return data["count"]
 
 # ==========================================
-# PASSWORD VERIFICATION (CHK_PSSWD)
+# STRICT PASSWORD VERIFICATION (CHK_PSSWD)
 # ==========================================
 def verify_password(entered_password: str):
-    """Checks user password against the CHK_PSSWD secret in Space Settings or local .env."""
+    """Checks user password against the CHK_PSSWD secret in Space/Kaggle Settings or local .env."""
     expected_password = os.environ.get("CHK_PSSWD", "").strip()
     if not expected_password:
-        raise gr.Error("Missing 'CHK_PSSWD' secret! Please set CHK_PSSWD in your Space Settings or .env file.")
+        raise gr.Error("Missing 'CHK_PSSWD' secret! Please set CHK_PSSWD in your Space/Kaggle Secrets or local .env file.")
 
     if entered_password.strip() == expected_password:
         return (
