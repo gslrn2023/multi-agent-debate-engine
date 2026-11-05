@@ -1,6 +1,8 @@
+gradio>=5.0.0
 groq>=0.18.0
 google-genai>=1.0.0
 markdown>=3.5.0
 tavily-python>=0.5.0
 xhtml2pdf>=0.2.16
 exa-py>=1.0.0
+python-dotenv>=1.0.1
