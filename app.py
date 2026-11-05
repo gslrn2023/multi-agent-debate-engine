@@ -1,9 +1,10 @@
 # ==============================================================================
 # MODULE: app.py (Main Entry Point)
-# Version: v2.9.6 | Date: 2026-11-04
-# Purpose: Main step-by-step debate orchestrator and Gradio UI assembly.
+# Version: v2.9.6 | Date: 2026-11-05
+# Purpose: Main step-by-step debate orchestrator and responsive Gradio UI.
 # ==============================================================================
 
+import os
 import time
 from datetime import datetime
 import gradio as gr
@@ -14,6 +15,10 @@ from config import (
     DEFAULT_MAX_LOOPS,
     DEFAULT_WAIT_TIME_SEC,
     MAX_DAILY_DEBATES,
+    GROQ_MODEL_CHOICES,
+    DEFAULT_GROQ_MODEL,
+    GEMINI_MODEL_CHOICES,
+    DEFAULT_GEMINI_MODEL,
     IST_TZ,
     CUSTOM_CSS,
     zerogpu_healthcheck,
@@ -202,6 +207,8 @@ def run_debate_step(topic_input, max_loops_input, cooldown_input, groq_model, ge
         state.setdefault("trace_logs", []).append(turn_trace_entry)
         print(f"\n{'='*60}\n[TRACE {APP_VERSION}] Round {current_round} | {agent_role} ({active_model})")
         print(f"  -> Inferred Domain   : {trace_meta['inferred_domain']} ({trace_meta['query_planner_source']})")
+        print(f"  -> Clauses & Target  : {trace_meta.get('clauses_and_target', '')}")
+        print(f"  -> Authorities       : {trace_meta.get('identified_authorities', '')}")
         if trace_meta.get("planner_errors"):
             print(f"  -> Planner Warnings  : {trace_meta['planner_errors']}")
         print(f"  -> Tavily Query      : {trace_meta['tavily_dispatched_query']}")
@@ -260,7 +267,7 @@ def reset_debate():
     )
 
 # ==========================================
-# GRADIO INTERFACE (WITH PASSWORD GATE)
+# GRADIO INTERFACE (RESPONSIVE + PASSWORD GATE)
 # ==========================================
 with gr.Blocks(css=CUSTOM_CSS, title=f"Multi-Agent AI Debate Engine ({APP_VERSION})") as demo:
     debate_state = gr.State({
@@ -278,19 +285,25 @@ with gr.Blocks(css=CUSTOM_CSS, title=f"Multi-Agent AI Debate Engine ({APP_VERSIO
     trace_badge = " • 🔍 `TRACE: ON`" if TRACE else ""
     gr.Markdown(
         f"# ⚖️ The Multi-Agent AI Debate Engine (`{APP_VERSION}`)\n"
-        f"*🟢 Supporter (100% Groq `openai/gpt-oss-120b`) vs. 🔴 Contender (100% Google `gemini-2.5-flash`) • Isolated Agentic Search (Tavily + Exa){trace_badge}*"
+        f"*🟢 Agent A: Supporter (Groq API) vs. 🔴 Agent B: Contender (Google Gemini API) • 5-Line Cognitive Search Planner (Tavily + Exa){trace_badge}*"
     )
 
     with gr.Column(visible=True) as login_view:
-        gr.Markdown("### 🔒 Protected Access\nPlease enter the access password to unlock the Debate Engine.")
+        gr.Markdown("### 🔒 Protected Access\nPlease enter the access password (`CHK_PSSWD`) to unlock the Debate Engine.")
         with gr.Row():
             password_input = gr.Textbox(
                 label="Access Password",
                 type="password",
                 placeholder="Enter password...",
-                scale=3
+                scale=3,
+                min_width=240
             )
-            unlock_btn = gr.Button("🔓 Unlock Debate Engine", variant="primary", scale=1)
+            unlock_btn = gr.Button(
+                "🔓 Unlock Debate Engine",
+                variant="primary",
+                scale=1,
+                min_width=180
+            )
         login_error_msg = gr.Markdown("")
 
     with gr.Column(visible=False) as main_debate_view:
@@ -302,7 +315,8 @@ with gr.Blocks(css=CUSTOM_CSS, title=f"Multi-Agent AI Debate Engine ({APP_VERSIO
                     value=DEFAULT_MAX_LOOPS,
                     step=1,
                     label=f"Number of Debate Rounds / Loops (Max {DEFAULT_MAX_LOOPS})",
-                    scale=2
+                    scale=2,
+                    min_width=240
                 )
                 cooldown_slider = gr.Slider(
                     minimum=0,
@@ -310,29 +324,38 @@ with gr.Blocks(css=CUSTOM_CSS, title=f"Multi-Agent AI Debate Engine ({APP_VERSIO
                     value=DEFAULT_WAIT_TIME_SEC,
                     step=1,
                     label="Wait Time Between Each Agent Execution (Seconds)",
-                    scale=2
+                    scale=2,
+                    min_width=240
                 )
             with gr.Row():
                 groq_model_dropdown = gr.Dropdown(
-                    choices=["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-                    value="openai/gpt-oss-120b",
-                    label="🟢 Supporter Model (Groq Only)",
-                    scale=1
+                    choices=GROQ_MODEL_CHOICES,
+                    value=DEFAULT_GROQ_MODEL,
+                    label="🟢 Supporter Model (Groq API)",
+                    scale=1,
+                    min_width=240
                 )
                 gemini_model_dropdown = gr.Dropdown(
-                    choices=["gemini-2.5-flash", "gemini-2.5-pro"],
-                    value="gemini-2.5-flash",
-                    label="🔴 Contender Model (Gemini Only)",
-                    scale=1
+                    choices=GEMINI_MODEL_CHOICES,
+                    value=DEFAULT_GEMINI_MODEL,
+                    label="🔴 Contender Model (Google Gemini API)",
+                    scale=1,
+                    min_width=240
                 )
 
         with gr.Row():
             topic_box = gr.Textbox(
                 label="Debate Proposition / Topic (Universal: Any Academic, Technical, Policy, Scientific, or Philosophical Domain)",
                 placeholder="Enter any proposition to debate...",
-                scale=4
+                scale=4,
+                min_width=260
             )
-            reset_btn = gr.Button("🔄 Reset / New Debate", variant="secondary", scale=1)
+            reset_btn = gr.Button(
+                "🔄 Reset / New Debate",
+                variant="secondary",
+                scale=1,
+                min_width=160
+            )
 
         feed_html = gr.HTML(value=render_feed_html("", [], DEFAULT_MAX_LOOPS))
 
@@ -341,21 +364,24 @@ with gr.Blocks(css=CUSTOM_CSS, title=f"Multi-Agent AI Debate Engine ({APP_VERSIO
                 "🚀 Start Debate (Trigger Round 1: Supporter [Groq])",
                 variant="primary",
                 size="lg",
-                scale=3
+                scale=3,
+                min_width=240
             )
             export_btn = gr.DownloadButton(
                 "📥 Download Transcript (.pdf)",
                 variant="secondary",
                 size="lg",
                 visible=False,
-                scale=1
+                scale=1,
+                min_width=180
             )
             trace_export_btn = gr.DownloadButton(
                 "🔍 Download Trace Log (.json)",
                 variant="secondary",
                 size="lg",
                 visible=False,
-                scale=1
+                scale=1,
+                min_width=180
             )
 
     unlock_btn.click(
@@ -394,4 +420,7 @@ with gr.Blocks(css=CUSTOM_CSS, title=f"Multi-Agent AI Debate Engine ({APP_VERSIO
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(
+        server_name=os.environ.get("GRADIO_SERVER_NAME", "0.0.0.0"),
+        server_port=int(os.environ.get("PORT", os.environ.get("GRADIO_SERVER_PORT", 7860)))
+    )
